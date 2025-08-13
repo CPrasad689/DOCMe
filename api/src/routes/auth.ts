@@ -1,5 +1,6 @@
 import express from 'express';
-import { supabase } from '../server';
+import { AuthService } from '../services/authService';
+import { kafkaService, KAFKA_TOPICS, EVENT_TYPES } from '../config/kafka';
 import { logger } from '../utils/logger';
 
 const router = express.Router();
@@ -13,57 +14,36 @@ router.post('/signup', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    // Create user in Supabase Auth
-    const { data: authData, error: authError } = await supabase.auth.signUp({
+    // Create user with AuthService
+    const user = await AuthService.createUser({
       email,
       password,
-      options: {
-        data: {
-          full_name: fullName
-        }
-      }
+      firstName: fullName?.split(' ')[0],
+      lastName: fullName?.split(' ').slice(1).join(' ')
     });
 
-    if (authError) {
-      logger.error('Signup error:', authError);
-      return res.status(400).json({ error: authError.message });
-    }
-
-    if (!authData.user) {
-      return res.status(400).json({ error: 'Failed to create user' });
-    }
-
-    // Create user profile in database
-    const { error: profileError } = await supabase
-      .from('users')
-      .insert({
-        id: authData.user.id,
-        email: authData.user.email,
-        full_name: fullName,
-        plan_type: 'free',
-        subscription_status: 'inactive'
-      });
-
-    if (profileError) {
-      logger.error('Profile creation error:', profileError);
-      // If user already exists, that's okay
-      if (!profileError.message.includes('duplicate key')) {
-        return res.status(500).json({ error: 'Failed to create user profile' });
-      }
-    }
+    // Generate JWT token
+    const loginResult = await AuthService.loginUser(
+      { email, password },
+      req.ip || 'unknown',
+      req.get('User-Agent') || 'unknown'
+    );
 
     return res.json({
       user: {
-        id: authData.user.id,
-        email: authData.user.email,
-        fullName: fullName
+        id: user.id,
+        email: user.email,
+        fullName: fullName,
+        planType: user.subscriptionTier
       },
-      session: authData.session
+      token: loginResult.token
     });
 
   } catch (error) {
     logger.error('Signup error:', error);
-    return res.status(500).json({ error: 'Internal server error' });
+    return res.status(400).json({ 
+      error: error instanceof Error ? error.message : 'Registration failed' 
+    });
   }
 });
 
@@ -76,52 +56,37 @@ router.post('/signin', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password
-    });
-
-    if (error) {
-      logger.error('Signin error:', error);
-      return res.status(400).json({ error: error.message });
-    }
-
-    if (!data.user) {
-      return res.status(400).json({ error: 'Authentication failed' });
-    }
-
-    // Get user profile
-    const { data: profile } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', data.user.id)
-      .single();
+    const loginResult = await AuthService.loginUser(
+      { email, password },
+      req.ip || 'unknown',
+      req.get('User-Agent') || 'unknown'
+    );
 
     return res.json({
-      user: {
-        id: data.user.id,
-        email: data.user.email,
-        fullName: profile?.full_name,
-        planType: profile?.plan_type,
-        subscriptionStatus: profile?.subscription_status
-      },
-      session: data.session
+      user: loginResult.user,
+      token: loginResult.token
     });
 
   } catch (error) {
     logger.error('Signin error:', error);
-    return res.status(500).json({ error: 'Internal server error' });
+    return res.status(400).json({ 
+      error: error instanceof Error ? error.message : 'Authentication failed' 
+    });
   }
 });
 
 // Sign out
 router.post('/signout', async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
+    const user = (req as any).user;
     
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7);
-      await supabase.auth.signOut();
+    if (user) {
+      // Publish logout event
+      await kafkaService.publishEvent(KAFKA_TOPICS.USER_EVENTS, {
+        type: EVENT_TYPES.USER_LOGOUT,
+        userId: user.id,
+        email: user.email
+      });
     }
 
     return res.json({ message: 'Signed out successfully' });
@@ -142,30 +107,19 @@ router.get('/me', async (req, res) => {
     }
 
     const token = authHeader.substring(7);
-    const { data: { user }, error } = await supabase.auth.getUser(token);
+    const user = await AuthService.verifyToken(token);
 
-    if (error || !user) {
+    if (!user) {
       return res.status(401).json({ error: 'Invalid token' });
-    }
-
-    // Get user profile
-    const { data: profile } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', user.id)
-      .single();
-
-    if (!profile) {
-      return res.status(404).json({ error: 'User profile not found' });
     }
 
     return res.json({
       user: {
         id: user.id,
         email: user.email,
-        fullName: profile.full_name,
-        planType: profile.plan_type,
-        subscriptionStatus: profile.subscription_status
+        fullName: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+        planType: user.subscriptionTier,
+        subscriptionStatus: 'active' // This would come from subscription service
       }
     });
 

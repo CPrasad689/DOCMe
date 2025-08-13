@@ -1,12 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
-import { supabase } from '../server';
+import { AuthService } from '../services/authService';
+import { kafkaService, KAFKA_TOPICS, EVENT_TYPES } from '../config/kafka';
 import { logger } from '../utils/logger';
 
 export interface AuthenticatedRequest extends Request {
   user: {
     id: string;
     email: string;
-    plan_type: string;
+    planType: string;
   };
 }
 
@@ -20,28 +21,20 @@ export const authenticateUser = async (req: Request, res: Response, next: NextFu
 
     const token = authHeader.substring(7);
 
-    // Verify token with Supabase
-    const { data: { user }, error } = await supabase.auth.getUser(token);
+    // Verify token with AuthService
+    const user = await AuthService.verifyToken(token);
 
-    if (error || !user) {
-      logger.error('Token verification failed:', error);
+    if (!user) {
+      logger.error('Token verification failed');
       return res.status(401).json({ error: 'Invalid token' });
     }
 
-    // Get user details from database
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select('id, email, plan_type')
-      .eq('id', user.id)
-      .single();
-
-    if (userError || !userData) {
-      logger.error('User data fetch failed:', userError);
-      return res.status(401).json({ error: 'User not found' });
-    }
-
     // Add user to request object
-    (req as AuthenticatedRequest).user = userData;
+    (req as AuthenticatedRequest).user = {
+      id: user.id,
+      email: user.email,
+      planType: user.subscriptionTier
+    };
     next();
 
   } catch (error) {
@@ -53,7 +46,7 @@ export const authenticateUser = async (req: Request, res: Response, next: NextFu
 export const requirePlan = (requiredPlan: string) => {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     const planHierarchy = { free: 0, pro: 1, enterprise: 2 };
-    const userPlanLevel = planHierarchy[req.user.plan_type as keyof typeof planHierarchy] || 0;
+    const userPlanLevel = planHierarchy[req.user.planType as keyof typeof planHierarchy] || 0;
     const requiredPlanLevel = planHierarchy[requiredPlan as keyof typeof planHierarchy] || 0;
 
     if (userPlanLevel < requiredPlanLevel) {

@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
-import { supabase, signIn, signUp, signOut, getCurrentUser } from '../lib/supabase';
-import type { User } from '@supabase/supabase-js';
+import { signIn, signUp, signOut, getCurrentUser } from '../lib/supabase';
 
-interface AuthUser extends User {
+interface AuthUser {
+  id: string;
+  email: string;
+  fullName?: string;
   planType?: string;
   subscriptionStatus?: string;
 }
@@ -15,21 +17,8 @@ export const useAuth = () => {
     // Get initial session
     const getInitialSession = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user) {
-          // Get user profile
-          const { data: profile } = await supabase
-            .from('users')
-            .select('plan_type, subscription_status')
-            .eq('id', session.user.id)
-            .single();
-
-          setUser({
-            ...session.user,
-            planType: profile?.plan_type,
-            subscriptionStatus: profile?.subscription_status
-          });
-        }
+        const user = await getCurrentUser();
+        setUser(user);
       } catch (error) {
         console.error('Error getting initial session:', error);
       } finally {
@@ -39,36 +28,13 @@ export const useAuth = () => {
 
     getInitialSession();
 
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        if (session?.user) {
-          // Get user profile
-          const { data: profile } = await supabase
-            .from('users')
-            .select('plan_type, subscription_status')
-            .eq('id', session.user.id)
-            .single();
-
-          setUser({
-            ...session.user,
-            planType: profile?.plan_type,
-            subscriptionStatus: profile?.subscription_status
-          });
-        } else {
-          setUser(null);
-        }
-        setLoading(false);
-      }
-    );
-
-    return () => subscription.unsubscribe();
   }, []);
 
   const handleSignIn = async (email: string, password: string) => {
     setLoading(true);
     try {
-      await signIn(email, password);
+      const result = await signIn(email, password);
+      setUser(result.user);
     } finally {
       setLoading(false);
     }
@@ -77,7 +43,8 @@ export const useAuth = () => {
   const handleSignUp = async (email: string, password: string, fullName: string) => {
     setLoading(true);
     try {
-      await signUp(email, password, fullName);
+      const result = await signUp(email, password, fullName);
+      setUser(result.user);
     } finally {
       setLoading(false);
     }
@@ -87,6 +54,7 @@ export const useAuth = () => {
     setLoading(true);
     try {
       await signOut();
+      setUser(null);
     } finally {
       setLoading(false);
     }

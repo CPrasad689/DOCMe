@@ -1,7 +1,8 @@
 import express from 'express';
 import crypto from 'crypto';
 import { authenticateUser, AuthenticatedRequest } from '../middleware/auth';
-import { supabase } from '../server';
+import { db } from '../config/database';
+import { kafkaService, KAFKA_TOPICS, EVENT_TYPES } from '../config/kafka';
 import { logger } from '../utils/logger';
 
 const router = express.Router();
@@ -35,20 +36,16 @@ router.get('/subscription/current', authenticateUser, async (req: AuthenticatedR
   try {
     const userId = req.user.id;
 
-    const { data: user, error } = await supabase
-      .from('users')
-      .select(`
-        plan_type,
-        subscription_status,
-        razorpay_customer_id
-      `)
-      .eq('id', userId)
-      .single();
+    const userResult = await db.query(
+      'SELECT plan_type, subscription_status, razorpay_customer_id FROM users WHERE id = $1',
+      [userId]
+    );
 
-    if (error) {
-      logger.error('Error fetching user subscription:', error);
+    if (userResult.rows.length === 0) {
       return res.status(500).json({ error: 'Failed to fetch subscription' });
     }
+
+    const user = userResult.rows[0];
 
     return res.json({
       planType: user.plan_type,
@@ -93,6 +90,15 @@ router.post('/subscription/create-order', authenticateUser, async (req: Authenti
       receipt: `order_${userId}_${Date.now()}`
     });
 
+    // Publish payment initiated event
+    await kafkaService.publishEvent(KAFKA_TOPICS.PAYMENT_EVENTS, {
+      type: EVENT_TYPES.PAYMENT_INITIATED,
+      userId,
+      orderId: order.id,
+      amount,
+      planType,
+      billingCycle
+    });
     return res.json({
       orderId: order.id,
       amount: order.amount,
@@ -122,14 +128,20 @@ router.post('/subscription/verify-payment', authenticateUser, async (req: Authen
     const payment = await mockRazorpay.payments.fetch(razorpay_payment_id);
 
     // Update user plan
-    await supabase
-      .from('users')
-      .update({
-        plan_type: planType,
-        subscription_status: 'active'
-      })
-      .eq('id', userId);
+    await db.query(
+      'UPDATE users SET plan_type = $1, subscription_status = $2 WHERE id = $3',
+      [planType, 'active', userId]
+    );
 
+    // Publish payment completed event
+    await kafkaService.publishEvent(KAFKA_TOPICS.PAYMENT_EVENTS, {
+      type: EVENT_TYPES.PAYMENT_COMPLETED,
+      userId,
+      paymentId: razorpay_payment_id,
+      orderId: razorpay_order_id,
+      planType,
+      amount: payment.amount
+    });
     return res.json({
       success: true,
       message: 'Payment verified and subscription activated'

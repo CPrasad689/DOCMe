@@ -1,10 +1,11 @@
 # 🚀 DOCMe - AI-Powered Document Conversion Platform
 
-[![Deployment Status](https://img.shields.io/badge/Status-Ready%20for%20Hostinger-green)](https://github.com/CPrasad689/DOCMe)
+[![Deployment Status](https://img.shields.io/badge/Status-Event%20Driven%20Architecture-green)](https://github.com/CPrasad689/DOCMe)
 [![GDPR Compliant](https://img.shields.io/badge/GDPR-Compliant-blue)](./src/components/pages/PrivacyPolicy.tsx)
+[![Kafka Powered](https://img.shields.io/badge/Kafka-Event%20Driven-orange)](./api/src/config/kafka.ts)
 [![AI Powered](https://img.shields.io/badge/AI-OpenRouter%20Powered-orange)](./api/src/services/openrouterService.ts)
 
-> **AI-Enhanced File Conversion Platform** with GDPR compliance, secure processing, and enterprise-grade features. Ready for production deployment on Hostinger.
+> **Event-Driven File Conversion Platform** with Kafka messaging, GDPR compliance, and enterprise-grade features. Scalable microservices architecture.
 
 ## ✨ Features
 
@@ -28,10 +29,11 @@
 - **Free & Premium** tiers available
 
 ### 🌐 Production Ready
-- **Hostinger Optimized** deployment configuration
+- **Event-Driven Architecture** with Apache Kafka
 - **PostgreSQL Database** with Prisma ORM
+- **Microservices Ready** with event streaming
 - **Environment Management** for development/production
-- **CDN Ready** static assets
+- **Scalable Infrastructure** with message queues
 
 ## 🏗️ Architecture
 
@@ -43,17 +45,24 @@ DOCMe/
 │   ├── src/hooks/              # Custom React Hooks
 │   └── src/config/             # Configuration
 │
-├── ⚡ Backend API (Express + TypeScript)
+├── ⚡ Backend API (Express + TypeScript + Kafka)
 │   ├── api/src/routes/         # API Endpoints
 │   ├── api/src/services/       # Business Logic
 │   ├── api/src/middleware/     # Security & Auth
-│   └── api/prisma/             # Database Schema
+│   ├── api/src/config/         # Kafka & Database Config
+│   └── api/src/database/       # Database Schema
 │
-├── 🗄️ Database (PostgreSQL + Prisma)
+├── 🗄️ Database (PostgreSQL)
 │   ├── User Management
 │   ├── Conversion History
 │   ├── Payment Records
 │   └── Analytics Data
+│
+├── 📡 Event Streaming (Apache Kafka)
+│   ├── User Events
+│   ├── File Conversion Events
+│   ├── Payment Events
+│   └── Audit Events
 │
 └── 🤖 AI Integration (OpenRouter API)
     ├── Content Enhancement
@@ -61,60 +70,72 @@ DOCMe/
     └── Intelligent Conversion
 ```
 
-## 🚀 Quick Start for Hostinger
+## 🚀 Quick Start with Kafka
 
-### 1. Environment Setup
+### 1. Start Infrastructure Services
+```bash
+# Start Kafka, PostgreSQL, and Redis
+docker-compose -f docker-compose.kafka.yml up -d
+
+# Wait for services to be ready
+docker-compose -f docker-compose.kafka.yml logs -f
+```
+
+### 2. Environment Setup
 Create `.env` files based on the templates:
 
 ```bash
 # Frontend (.env)
 VITE_API_URL=https://yourdomain.com
-VITE_SUPABASE_URL=your_supabase_url
-VITE_SUPABASE_ANON_KEY=your_supabase_key
 
 # Backend (api/.env)
-DATABASE_URL=your_postgresql_url
+DATABASE_URL=postgresql://docme_user:docme_password@localhost:5432/docme_db
+KAFKA_BROKERS=localhost:9092
+KAFKA_CLIENT_ID=docme-api
+KAFKA_GROUP_ID=docme-consumers
 OPENROUTER_API_KEY=sk-or-v1-your-key
-SUPABASE_URL=your_supabase_url
-SUPABASE_SERVICE_KEY=your_service_key
-STRIPE_SECRET_KEY=your_stripe_key
+JWT_SECRET=your-jwt-secret
 RAZORPAY_KEY_ID=your_razorpay_id
 RAZORPAY_KEY_SECRET=your_razorpay_secret
 ```
 
-### 2. Database Setup
+### 3. Database Setup
 ```bash
 cd api
 npm install
-npx prisma generate
-npx prisma db push
+
+# Run database schema
+psql -h localhost -U docme_user -d docme_db -f src/database/schema.sql
 ```
 
-### 3. Build & Deploy
+### 4. Start Application
 ```bash
 # Frontend build
 npm install
-npm run build
+npm run dev
 
 # Backend setup
 cd api
 npm install
-npm run build
+npm run dev
 ```
 
-### 4. Hostinger Deployment
-- Upload `dist/` folder to public_html
-- Upload `api/` folder to your Node.js app directory
-- Configure environment variables in Hostinger panel
-- Set up PostgreSQL database connection
+### 5. Monitor Kafka Events
+```bash
+# Access Kafka UI
+open http://localhost:8080
+
+# View topics and messages in real-time
+```
 
 ## 📋 Deployment Checklist
 
 - [x] ✅ **Repository Created** - GitHub repository ready
 - [ ] ⚙️ **Environment Variables** - Configure all required env vars
 - [ ] 🗄️ **Database Setup** - PostgreSQL database configured
-- [ ] 🔑 **API Keys** - OpenRouter, Supabase, Stripe/Razorpay keys added
-- [ ] 🌐 **Domain Configuration** - Point domain to Hostinger
+- [ ] 📡 **Kafka Setup** - Apache Kafka cluster running
+- [ ] 🔑 **API Keys** - OpenRouter, Stripe/Razorpay keys added
+- [ ] 🌐 **Domain Configuration** - Point domain to hosting provider
 - [ ] 🔒 **SSL Certificate** - Enable HTTPS
 - [ ] 📊 **Analytics Setup** - Configure tracking (optional)
 - [ ] 🧪 **Testing** - Verify all features work in production
@@ -124,6 +145,8 @@ npm run build
 ### Prerequisites
 - Node.js 18+
 - PostgreSQL 14+
+- Apache Kafka 2.8+
+- Docker & Docker Compose
 - Git
 
 ### Local Development
@@ -132,14 +155,19 @@ npm run build
 git clone https://github.com/CPrasad689/DOCMe.git
 cd DOCMe
 
+# Start infrastructure services
+docker-compose -f docker-compose.kafka.yml up -d
+
 # Install dependencies
 npm install
 cd api && npm install && cd ..
 
 # Set up environment
 cp .env.example .env
-cp api/.env.example api/.env
+cp api/.env.kafka api/.env
 
+# Initialize database
+cd api && npm run db:init
 # Start development servers
 npm run dev          # Frontend (port 5173)
 cd api && npm run dev # Backend (port 3001)
@@ -153,10 +181,15 @@ cd api && npm run dev # Backend (port 3001)
 - **Batch Processing**: Multiple files with progress tracking
 - **Quality Optimization**: AI-powered content enhancement
 
+### Event-Driven Architecture
+- **Apache Kafka**: Real-time event streaming
+- **Microservices Ready**: Decoupled service communication
+- **Scalable Processing**: Asynchronous file conversion
+- **Audit Trail**: Complete event logging for compliance
 ### Security Implementation
 - **GDPR Compliance**: Full data protection compliance
 - **Encryption**: AES-256 + TLS 1.3
-- **Authentication**: Supabase Auth with JWT
+- **Authentication**: JWT-based with session management
 - **File Security**: Auto-deletion after 24 hours
 
 ### Payment System
@@ -170,13 +203,14 @@ cd api && npm run dev # Backend (port 3001)
 ### Key Configuration Files
 - `vite.config.ts` - Frontend build configuration
 - `api/package.json` - Backend dependencies
-- `api/prisma/schema.prisma` - Database schema
+- `api/src/database/schema.sql` - Database schema
+- `api/src/config/kafka.ts` - Kafka configuration
+- `docker-compose.kafka.yml` - Infrastructure services
 - `tailwind.config.js` - UI styling configuration
-- `.env.example` - Environment template
 
-### Hostinger Specific Files
-- `migrate-to-hostinger.sh` - Deployment script
-- `HOSTINGER_MIGRATION_GUIDE.md` - Detailed migration guide
+### Event-Driven Architecture Files
+- `api/src/config/kafka.ts` - Kafka service configuration
+- `api/src/services/eventHandlers.ts` - Event processing logic
 - `PRODUCTION_DEPLOYMENT.md` - Production setup guide
 
 ## 📚 Documentation
@@ -184,7 +218,7 @@ cd api && npm run dev # Backend (port 3001)
 - 📖 [Hostinger Migration Guide](./HOSTINGER_MIGRATION_GUIDE.md)
 - 🚀 [Production Deployment](./PRODUCTION_DEPLOYMENT.md)
 - 🔒 [GDPR Compliance](./GDPR_DEPLOYMENT_COMPLETE.md)
-- 💾 [Database Migration](./DATABASE_MIGRATION_BENEFITS.md)
+- 📡 [Kafka Integration](./api/src/config/kafka.ts)
 - ✅ [Testing Guide](./COMPLETE_TESTING_GUIDE.md)
 
 ## 🤝 Support
@@ -200,4 +234,4 @@ This project is ready for commercial deployment on Hostinger.
 
 ---
 
-**Ready for Production** ✅ | **GDPR Compliant** 🔒 | **AI Powered** 🤖 | **Hostinger Optimized** 🚀
+**Event-Driven** 📡 | **GDPR Compliant** 🔒 | **AI Powered** 🤖 | **Kafka Powered** 🚀

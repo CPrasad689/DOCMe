@@ -1,53 +1,94 @@
-import { createClient } from '@supabase/supabase-js';
-
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://dntwhvaorxpzwdjzemph.supabase.co';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRudHdodmFvcnhwendkanplbXBoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM0NzE2MTEsImV4cCI6MjA2OTA0NzYxMX0.xVSnynjBIVZFihZ1REuz6o2142H6mhyb5yRw5tKRqbM';
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Missing Supabase environment variables');
-}
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    autoRefreshToken: true,
-    persistSession: true,
-    detectSessionInUrl: true
-  }
-});
+import { API_BASE_URL } from '../config/api';
 
 // Auth helpers
 export const signUp = async (email: string, password: string, fullName: string) => {
-  const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
-    options: {
-      data: {
-        full_name: fullName
-      }
-    }
+  const response = await fetch(`${API_BASE_URL}/auth/signup`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ email, password, fullName })
   });
 
-  if (error) throw error;
+  const data = await response.json();
+  
+  if (!response.ok) {
+    throw new Error(data.error || 'Registration failed');
+  }
+  
+  // Store token in localStorage
+  if (data.token) {
+    localStorage.setItem('auth_token', data.token);
+  }
+  
   return data;
 };
 
 export const signIn = async (email: string, password: string) => {
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email,
-    password
+  const response = await fetch(`${API_BASE_URL}/auth/signin`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ email, password })
   });
 
-  if (error) throw error;
+  const data = await response.json();
+  
+  if (!response.ok) {
+    throw new Error(data.error || 'Login failed');
+  }
+  
+  // Store token in localStorage
+  if (data.token) {
+    localStorage.setItem('auth_token', data.token);
+  }
+  
   return data;
 };
 
 export const signOut = async () => {
-  const { error } = await supabase.auth.signOut();
-  if (error) throw error;
+  const token = localStorage.getItem('auth_token');
+  
+  if (token) {
+    await fetch(`${API_BASE_URL}/auth/signout`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+  }
+  
+  localStorage.removeItem('auth_token');
 };
 
 export const getCurrentUser = async () => {
-  const { data: { user }, error } = await supabase.auth.getUser();
-  if (error) throw error;
-  return user;
+  const token = localStorage.getItem('auth_token');
+  
+  if (!token) {
+    return null;
+  }
+  
+  const response = await fetch(`${API_BASE_URL}/auth/me`, {
+    headers: {
+      'Authorization': `Bearer ${token}`
+    }
+  });
+  
+  if (!response.ok) {
+    localStorage.removeItem('auth_token');
+    return null;
+  }
+  
+  const data = await response.json();
+  return data.user;
+};
+
+// Session management
+export const getAuthToken = () => {
+  return localStorage.getItem('auth_token');
+};
+
+export const isAuthenticated = () => {
+  return !!localStorage.getItem('auth_token');
 };

@@ -1,6 +1,8 @@
-import { prisma } from '../lib/database';
+import { db } from '../config/database';
+import { kafkaService, KAFKA_TOPICS, EVENT_TYPES } from '../config/kafka';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { v4 as uuidv4 } from 'uuid';
 
 export interface CreateUserData {
   email: string;
@@ -21,11 +23,12 @@ export class AuthService {
     const { email, password, firstName, lastName, username } = userData;
 
     // Check if user already exists
-    const existingUser = await prisma.user.findUnique({
-      where: { email }
-    });
+    const existingUserResult = await db.query(
+      'SELECT id FROM users WHERE email = $1',
+      [email]
+    );
 
-    if (existingUser) {
+    if (existingUserResult.rows.length > 0) {
       throw new Error('User with this email already exists');
     }
 
@@ -33,43 +36,32 @@ export class AuthService {
     const saltRounds = parseInt(process.env.BCRYPT_ROUNDS || '12');
     const passwordHash = await bcrypt.hash(password, saltRounds);
 
+    const userId = uuidv4();
+    
     // Create user
-    const user = await prisma.user.create({
-      data: {
-        email,
-        passwordHash,
-        firstName,
-        lastName,
-        username,
-        subscriptionTier: 'FREE',
-        monthlyConversions: 0,
-        totalConversions: 0
-      },
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        username: true,
-        subscriptionTier: true,
-        emailVerified: true,
-        createdAt: true
-      }
-    });
+    await db.query(`
+      INSERT INTO users (id, email, password_hash, first_name, last_name, username, subscription_tier, monthly_conversions, total_conversions)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `, [userId, email, passwordHash, firstName, lastName, username, 'FREE', 0, 0]);
 
-    // Log user registration
-    await prisma.auditLog.create({
-      data: {
-        userId: user.id,
-        action: 'user_registration',
-        resource: 'user',
-        resourceId: user.id,
-        ipAddress: 'system',
-        userAgent: 'system',
-        requestId: `reg_${Date.now()}`,
-        legalBasis: 'contract',
-        processingPurpose: 'account_creation'
-      }
+    const user = {
+      id: userId,
+      email,
+      firstName,
+      lastName,
+      username,
+      subscriptionTier: 'FREE',
+      emailVerified: false,
+      createdAt: new Date()
+    };
+    // Publish user registration event to Kafka
+    await kafkaService.publishEvent(KAFKA_TOPICS.USER_EVENTS, {
+      type: EVENT_TYPES.USER_REGISTERED,
+      userId: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      subscriptionTier: user.subscriptionTier
     });
 
     return user;
@@ -80,76 +72,61 @@ export class AuthService {
     const { email, password } = loginData;
 
     // Find user
-    const user = await prisma.user.findUnique({
-      where: { email }
-    });
+    const userResult = await db.query(
+      'SELECT * FROM users WHERE email = $1',
+      [email]
+    );
 
-    if (!user) {
+    if (userResult.rows.length === 0) {
       throw new Error('Invalid email or password');
     }
 
+    const user = userResult.rows[0];
+
     // Check if account is locked
-    if (user.lockedUntil && user.lockedUntil > new Date()) {
+    if (user.locked_until && new Date(user.locked_until) > new Date()) {
       throw new Error('Account is temporarily locked due to too many failed attempts');
     }
 
     // Verify password
-    const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
+    const isPasswordValid = await bcrypt.compare(password, user.password_hash);
 
     if (!isPasswordValid) {
       // Increment login attempts
-      const newAttempts = user.loginAttempts + 1;
+      const newAttempts = user.login_attempts + 1;
       const lockUntil = newAttempts >= 5 ? new Date(Date.now() + 30 * 60 * 1000) : null; // 30 minutes
 
-      await prisma.user.update({
-        where: { id: user.id },
-        data: {
-          loginAttempts: newAttempts,
-          lockedUntil: lockUntil
-        }
-      });
+      await db.query(
+        'UPDATE users SET login_attempts = $1, locked_until = $2 WHERE id = $3',
+        [newAttempts, lockUntil, user.id]
+      );
 
-      // Log failed login attempt
-      await prisma.auditLog.create({
-        data: {
-          userId: user.id,
-          action: 'failed_login',
-          resource: 'user',
-          resourceId: user.id,
-          ipAddress,
-          userAgent,
-          requestId: `login_fail_${Date.now()}`,
-          legalBasis: 'legitimate_interest',
-          processingPurpose: 'security_monitoring'
-        }
+      // Publish failed login event
+      await kafkaService.publishEvent(KAFKA_TOPICS.AUDIT_EVENTS, {
+        type: 'user.login.failed',
+        userId: user.id,
+        email: user.email,
+        ipAddress,
+        userAgent,
+        attempts: newAttempts
       });
 
       throw new Error('Invalid email or password');
     }
 
     // Successful login - reset attempts and update last login
-    await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        loginAttempts: 0,
-        lockedUntil: null,
-        lastLoginAt: new Date()
-      }
-    });
+    await db.query(
+      'UPDATE users SET login_attempts = 0, locked_until = NULL, last_login_at = NOW() WHERE id = $1',
+      [user.id]
+    );
 
-    // Log successful login
-    await prisma.auditLog.create({
-      data: {
-        userId: user.id,
-        action: 'successful_login',
-        resource: 'user',
-        resourceId: user.id,
-        ipAddress,
-        userAgent,
-        requestId: `login_success_${Date.now()}`,
-        legalBasis: 'contract',
-        processingPurpose: 'service_provision'
-      }
+    // Publish successful login event
+    await kafkaService.publishEvent(KAFKA_TOPICS.USER_EVENTS, {
+      type: EVENT_TYPES.USER_LOGIN,
+      userId: user.id,
+      email: user.email,
+      ipAddress,
+      userAgent
     });
 
     // Generate JWT
@@ -157,7 +134,7 @@ export class AuthService {
       { 
         userId: user.id,
         email: user.email,
-        subscriptionTier: user.subscriptionTier
+        subscriptionTier: user.subscription_tier
       },
       process.env.JWT_SECRET!,
       { expiresIn: process.env.JWT_EXPIRE || '24h' }
@@ -168,12 +145,12 @@ export class AuthService {
       user: {
         id: user.id,
         email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
+        firstName: user.first_name,
+        lastName: user.last_name,
         username: user.username,
-        subscriptionTier: user.subscriptionTier,
-        emailVerified: user.emailVerified,
-        totalConversions: user.totalConversions
+        subscriptionTier: user.subscription_tier,
+        emailVerified: user.email_verified,
+        totalConversions: user.total_conversions
       }
     };
   }
@@ -184,25 +161,26 @@ export class AuthService {
       const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
       
       // Get current user data
-      const user = await prisma.user.findUnique({
-        where: { id: decoded.userId },
-        select: {
-          id: true,
-          email: true,
-          firstName: true,
-          lastName: true,
-          username: true,
-          subscriptionTier: true,
-          emailVerified: true,
-          isActive: true
-        }
-      });
+      const userResult = await db.query(
+        'SELECT id, email, first_name, last_name, username, subscription_tier, email_verified, is_active FROM users WHERE id = $1',
+        [decoded.userId]
+      );
 
-      if (!user || !user.isActive) {
+      if (userResult.rows.length === 0 || !userResult.rows[0].is_active) {
         throw new Error('User not found or inactive');
       }
 
-      return user;
+      const user = userResult.rows[0];
+      return {
+        id: user.id,
+        email: user.email,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        username: user.username,
+        subscriptionTier: user.subscription_tier,
+        emailVerified: user.email_verified,
+        isActive: user.is_active
+      };
     } catch (error) {
       throw new Error('Invalid token');
     }
@@ -210,23 +188,30 @@ export class AuthService {
 
   // Get user by ID
   static async getUserById(userId: string) {
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        username: true,
-        subscriptionTier: true,
-        emailVerified: true,
-        totalConversions: true,
-        monthlyConversions: true,
-        subscriptionExpiry: true,
-        createdAt: true
-      }
-    });
+    const userResult = await db.query(`
+      SELECT id, email, first_name, last_name, username, subscription_tier, 
+             email_verified, total_conversions, monthly_conversions, 
+             subscription_expiry, created_at
+      FROM users WHERE id = $1
+    `, [userId]);
 
-    return user;
+    if (userResult.rows.length === 0) {
+      return null;
+    }
   }
 }
+
+    const user = userResult.rows[0];
+    return {
+      id: user.id,
+      email: user.email,
+      firstName: user.first_name,
+      lastName: user.last_name,
+      username: user.username,
+      subscriptionTier: user.subscription_tier,
+      emailVerified: user.email_verified,
+      totalConversions: user.total_conversions,
+      monthlyConversions: user.monthly_conversions,
+      subscriptionExpiry: user.subscription_expiry,
+      createdAt: user.created_at
+    };

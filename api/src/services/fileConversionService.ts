@@ -1,6 +1,8 @@
-import { prisma } from '../lib/database';
-import { ConversionStatus } from '@prisma/client';
+import { db } from '../config/database';
+import { kafkaService, KAFKA_TOPICS, EVENT_TYPES } from '../config/kafka';
 import { v4 as uuidv4 } from 'uuid';
+
+type ConversionStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'EXPIRED';
 
 export interface FileConversionData {
   userId?: string;
@@ -28,31 +30,53 @@ export interface ConversionResult {
 export class FileConversionService {
   // Create a new file conversion record
   static async createConversion(data: FileConversionData) {
-    const conversion = await prisma.fileConversion.create({
-      data: {
-        ...data,
-        status: 'PENDING',
-        requestId: data.requestId || `conv_${uuidv4()}`,
-        downloadExpiry: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours
-      }
+    const conversionId = uuidv4();
+    const requestId = data.requestId || `conv_${uuidv4()}`;
+    const downloadExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+    await db.query(`
+      INSERT INTO file_conversions (
+        id, user_id, original_file_name, original_file_size, original_mime_type,
+        input_format, output_format, status, ip_address, user_agent, request_id, download_expiry
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    `, [
+      conversionId,
+      data.userId,
+      data.originalFileName,
+      data.originalFileSize,
+      data.originalMimeType,
+      data.inputFormat,
+      data.outputFormat,
+      'PENDING',
+      data.ipAddress,
+      data.userAgent,
+      requestId,
+      downloadExpiry
+    ]);
+
+    // Publish file upload event
+    await kafkaService.publishEvent(KAFKA_TOPICS.AUDIT_EVENTS, {
+      type: 'file_upload',
+      userId: data.userId,
+      conversionId,
+      fileName: data.originalFileName,
+      fileSize: data.originalFileSize,
+      ipAddress: data.ipAddress,
+      userAgent: data.userAgent,
+      requestId,
+      legalBasis: 'contract',
+      processingPurpose: 'file_conversion_service'
     });
 
-    // Log the file upload for GDPR compliance
-    await prisma.auditLog.create({
-      data: {
-        userId: data.userId || null,
-        action: 'file_upload',
-        resource: 'file_conversion',
-        resourceId: conversion.id,
-        ipAddress: data.ipAddress,
-        userAgent: data.userAgent || 'unknown',
-        requestId: data.requestId,
-        legalBasis: 'contract',
-        processingPurpose: 'file_conversion_service'
-      }
-    });
-
-    return conversion;
+    return {
+      id: conversionId,
+      userId: data.userId,
+      originalFileName: data.originalFileName,
+      status: 'PENDING',
+      requestId,
+      downloadExpiry,
+      createdAt: new Date()
+    };
   }
 
   // Update conversion status
@@ -61,65 +85,67 @@ export class FileConversionService {
     status: ConversionStatus,
     result?: ConversionResult
   ) {
-    const updateData: any = {
-      status,
-      updatedAt: new Date()
-    };
+    let query = 'UPDATE file_conversions SET status = $1, updated_at = NOW()';
+    let params = [status];
 
     if (status === 'PROCESSING') {
-      updateData.conversionStartedAt = new Date();
+      query += ', conversion_started_at = NOW()';
     } else if (status === 'COMPLETED' || status === 'FAILED') {
-      updateData.conversionEndedAt = new Date();
+      query += ', conversion_ended_at = NOW()';
       
       if (result) {
         if (result.success) {
-          updateData.convertedFileName = result.convertedFileName;
-          updateData.convertedFileSize = result.convertedFileSize;
-          updateData.convertedMimeType = result.convertedMimeType;
-          updateData.downloadUrl = result.downloadUrl;
-          updateData.processingTimeMs = result.processingTimeMs;
-          updateData.contentValidated = true;
+          query += ', converted_file_name = $2, converted_file_size = $3, converted_mime_type = $4, download_url = $5, processing_time_ms = $6, content_validated = true';
+          params.push(
+            result.convertedFileName,
+            result.convertedFileSize,
+            result.convertedMimeType,
+            result.downloadUrl,
+            result.processingTimeMs
+          );
         } else {
-          updateData.errorMessage = result.errorMessage;
-          updateData.errorCode = result.errorCode;
+          query += ', error_message = $2, error_code = $3';
+          params.push(result.errorMessage, result.errorCode);
         }
       }
     }
 
-    const conversion = await prisma.fileConversion.update({
-      where: { id: conversionId },
-      data: updateData
-    });
+    query += ' WHERE id = $' + (params.length + 1);
+    params.push(conversionId);
+
+    const conversionResult = await db.query(query, params);
+    
+    // Get the updated conversion
+    const updatedConversionResult = await db.query(
+      'SELECT * FROM file_conversions WHERE id = $1',
+      [conversionId]
+    );
+    
+    const conversion = updatedConversionResult.rows[0];
 
     // Update user's conversion count if successful
-    if (status === 'COMPLETED' && conversion.userId) {
-      await prisma.user.update({
-        where: { id: conversion.userId },
-        data: {
-          totalConversions: { increment: 1 },
-          monthlyConversions: { increment: 1 }
-        }
-      });
+    if (status === 'COMPLETED' && conversion.user_id) {
+      await db.query(
+        'UPDATE users SET total_conversions = total_conversions + 1, monthly_conversions = monthly_conversions + 1 WHERE id = $1',
+        [conversion.user_id]
+      );
     }
 
-    // Log the conversion completion
-    await prisma.auditLog.create({
-      data: {
-        userId: conversion.userId || null,
-        action: 'conversion_' + status.toLowerCase(),
-        resource: 'file_conversion',
-        resourceId: conversion.id,
-        ipAddress: conversion.ipAddress,
-        userAgent: conversion.userAgent || 'unknown',
-        requestId: conversion.requestId,
-        legalBasis: 'contract',
-        processingPurpose: 'file_conversion_service',
-        metadata: result ? {
-          processingTimeMs: result.processingTimeMs,
-          success: result.success,
-          errorCode: result.errorCode
-        } : null
-      }
+    // Publish conversion status event
+    await kafkaService.publishEvent(KAFKA_TOPICS.AUDIT_EVENTS, {
+      type: `conversion_${status.toLowerCase()}`,
+      userId: conversion.user_id,
+      conversionId: conversion.id,
+      ipAddress: conversion.ip_address,
+      userAgent: conversion.user_agent,
+      requestId: conversion.request_id,
+      legalBasis: 'contract',
+      processingPurpose: 'file_conversion_service',
+      metadata: result ? {
+        processingTimeMs: result.processingTimeMs,
+        success: result.success,
+        errorCode: result.errorCode
+      } : null
     });
 
     return conversion;
@@ -127,77 +153,40 @@ export class FileConversionService {
 
   // Get conversion by ID
   static async getConversionById(conversionId: string, userId?: string) {
-    const whereClause: any = { id: conversionId };
-    
-    // If userId is provided, ensure the user owns the conversion or it's a public conversion
+    let query = 'SELECT * FROM file_conversions WHERE id = $1';
+    let params = [conversionId];
+
     if (userId) {
-      whereClause.OR = [
-        { userId: userId },
-        { userId: null } // Public/anonymous conversions
-      ];
+      query += ' AND (user_id = $2 OR user_id IS NULL)';
+      params.push(userId);
     }
 
-    const conversion = await prisma.fileConversion.findFirst({
-      where: whereClause,
-      select: {
-        id: true,
-        originalFileName: true,
-        originalFileSize: true,
-        inputFormat: true,
-        outputFormat: true,
-        status: true,
-        convertedFileName: true,
-        convertedFileSize: true,
-        downloadUrl: true,
-        downloadExpiry: true,
-        downloadCount: true,
-        processingTimeMs: true,
-        errorMessage: true,
-        conversionStartedAt: true,
-        conversionEndedAt: true,
-        createdAt: true,
-        user: userId ? {
-          select: {
-            id: true,
-            email: true
-          }
-        } : false
-      }
-    });
-
-    return conversion;
+    const result = await db.query(query, params);
+    return result.rows[0] || null;
   }
 
   // Get user's conversion history
   static async getUserConversions(userId: string, page = 1, limit = 20) {
     const skip = (page - 1) * limit;
 
-    const [conversions, total] = await Promise.all([
-      prisma.fileConversion.findMany({
-        where: { userId },
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: limit,
-        select: {
-          id: true,
-          originalFileName: true,
-          originalFileSize: true,
-          inputFormat: true,
-          outputFormat: true,
-          status: true,
-          convertedFileName: true,
-          convertedFileSize: true,
-          downloadUrl: true,
-          downloadExpiry: true,
-          downloadCount: true,
-          processingTimeMs: true,
-          errorMessage: true,
-          createdAt: true,
-          conversionEndedAt: true
-        }
-      }),
-      prisma.fileConversion.count({ where: { userId } })
-    ]);
+    const conversionsResult = await db.query(`
+      SELECT id, original_file_name, original_file_size, input_format, output_format,
+             status, converted_file_name, converted_file_size, download_url,
+             download_expiry, download_count, processing_time_ms, error_message,
+             created_at, conversion_ended_at
+      FROM file_conversions 
+      WHERE user_id = $1 
+      ORDER BY created_at DESC 
+      LIMIT $2 OFFSET $3
+    `, [userId, limit, skip]);
+
+    const countResult = await db.query(
+      'SELECT COUNT(*) FROM file_conversions WHERE user_id = $1',
+      [userId]
+    );
+
+    const conversions = conversionsResult.rows;
+    const total = parseInt(countResult.rows[0].count);
 
     return {
       conversions,
@@ -212,93 +201,76 @@ export class FileConversionService {
 
   // Track file download
   static async trackDownload(conversionId: string, ipAddress: string, userAgent?: string) {
-    const conversion = await prisma.fileConversion.findUnique({
-      where: { id: conversionId }
-    });
+    const conversionResult = await db.query(
+      'SELECT * FROM file_conversions WHERE id = $1',
+      [conversionId]
+    );
 
-    if (!conversion || !conversion.downloadUrl) {
+    if (conversionResult.rows.length === 0 || !conversionResult.rows[0].download_url) {
       throw new Error('Conversion not found or no download available');
     }
 
+    const conversion = conversionResult.rows[0];
+
     // Check if download has expired
-    if (conversion.downloadExpiry && conversion.downloadExpiry < new Date()) {
+    if (conversion.download_expiry && new Date(conversion.download_expiry) < new Date()) {
       throw new Error('Download has expired');
     }
 
     // Update download count
-    const updatedConversion = await prisma.fileConversion.update({
-      where: { id: conversionId },
-      data: {
-        downloadCount: { increment: 1 }
-      }
+    await db.query(
+      'UPDATE file_conversions SET download_count = download_count + 1 WHERE id = $1',
+      [conversionId]
+    );
+
+    // Publish download event
+    await kafkaService.publishEvent(KAFKA_TOPICS.AUDIT_EVENTS, {
+      type: 'file_download',
+      userId: conversion.user_id,
+      conversionId,
+      ipAddress,
+      userAgent: userAgent || 'unknown',
+      requestId: `download_${Date.now()}`,
+      legalBasis: 'contract',
+      processingPurpose: 'file_delivery'
     });
 
-    // Log the download for GDPR compliance
-    await prisma.auditLog.create({
-      data: {
-        userId: conversion.userId || null,
-        action: 'file_download',
-        resource: 'file_conversion',
-        resourceId: conversionId,
-        ipAddress,
-        userAgent: userAgent || 'unknown',
-        requestId: `download_${Date.now()}`,
-        legalBasis: 'contract',
-        processingPurpose: 'file_delivery'
-      }
-    });
-
-    return updatedConversion;
+    return conversion;
   }
 
   // Clean up expired conversions
   static async cleanupExpiredConversions() {
     const expiredDate = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24 hours ago
 
-    const expiredConversions = await prisma.fileConversion.findMany({
-      where: {
-        OR: [
-          {
-            downloadExpiry: {
-              lt: expiredDate
-            }
-          },
-          {
-            status: 'FAILED',
-            createdAt: {
-              lt: expiredDate
-            }
-          }
-        ]
-      }
-    });
+    const expiredConversionsResult = await db.query(`
+      SELECT id FROM file_conversions 
+      WHERE (download_expiry < $1) OR (status = 'FAILED' AND created_at < $1)
+    `, [expiredDate]);
+
+    const expiredConversions = expiredConversionsResult.rows;
 
     if (expiredConversions.length > 0) {
-      // Log cleanup activity
-      await prisma.auditLog.create({
-        data: {
-          action: 'system_cleanup',
-          resource: 'file_conversion',
-          ipAddress: 'system',
-          userAgent: 'system',
-          requestId: `cleanup_${Date.now()}`,
-          legalBasis: 'legitimate_interest',
-          processingPurpose: 'data_retention_compliance',
-          metadata: {
-            cleanedCount: expiredConversions.length,
-            type: 'expired_conversions'
-          }
+      // Publish cleanup event
+      await kafkaService.publishEvent(KAFKA_TOPICS.AUDIT_EVENTS, {
+        type: 'system_cleanup',
+        resource: 'file_conversion',
+        ipAddress: 'system',
+        userAgent: 'system',
+        requestId: `cleanup_${Date.now()}`,
+        legalBasis: 'legitimate_interest',
+        processingPurpose: 'data_retention_compliance',
+        metadata: {
+          cleanedCount: expiredConversions.length,
+          type: 'expired_conversions'
         }
       });
 
       // Delete expired conversions
-      await prisma.fileConversion.deleteMany({
-        where: {
-          id: {
-            in: expiredConversions.map(c => c.id)
-          }
-        }
-      });
+      const conversionIds = expiredConversions.map(c => c.id);
+      await db.query(
+        `DELETE FROM file_conversions WHERE id = ANY($1)`,
+        [conversionIds]
+      );
     }
 
     return expiredConversions.length;
@@ -306,35 +278,37 @@ export class FileConversionService {
 
   // Get conversion statistics
   static async getConversionStats(userId?: string) {
-    const whereClause = userId ? { userId } : {};
+    let whereClause = '';
+    let params: any[] = [];
+
+    if (userId) {
+      whereClause = 'WHERE user_id = $1';
+      params = [userId];
+    }
 
     const [
-      totalConversions,
-      successfulConversions,
-      failedConversions,
-      todayConversions,
-      thisMonthConversions
+      totalResult,
+      successfulResult,
+      failedResult,
+      todayResult,
+      monthResult
     ] = await Promise.all([
-      prisma.fileConversion.count({ where: whereClause }),
-      prisma.fileConversion.count({ where: { ...whereClause, status: 'COMPLETED' } }),
-      prisma.fileConversion.count({ where: { ...whereClause, status: 'FAILED' } }),
-      prisma.fileConversion.count({
-        where: {
-          ...whereClause,
-          createdAt: {
-            gte: new Date(new Date().setHours(0, 0, 0, 0))
-          }
-        }
-      }),
-      prisma.fileConversion.count({
-        where: {
-          ...whereClause,
-          createdAt: {
-            gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
-          }
-        }
-      })
+      db.query(`SELECT COUNT(*) FROM file_conversions ${whereClause}`, params),
+      db.query(`SELECT COUNT(*) FROM file_conversions ${whereClause} ${whereClause ? 'AND' : 'WHERE'} status = 'COMPLETED'`, 
+        whereClause ? [...params, 'COMPLETED'] : ['COMPLETED']),
+      db.query(`SELECT COUNT(*) FROM file_conversions ${whereClause} ${whereClause ? 'AND' : 'WHERE'} status = 'FAILED'`, 
+        whereClause ? [...params, 'FAILED'] : ['FAILED']),
+      db.query(`SELECT COUNT(*) FROM file_conversions ${whereClause} ${whereClause ? 'AND' : 'WHERE'} created_at >= CURRENT_DATE`, 
+        params),
+      db.query(`SELECT COUNT(*) FROM file_conversions ${whereClause} ${whereClause ? 'AND' : 'WHERE'} created_at >= date_trunc('month', CURRENT_DATE)`, 
+        params)
     ]);
+
+    const totalConversions = parseInt(totalResult.rows[0].count);
+    const successfulConversions = parseInt(successfulResult.rows[0].count);
+    const failedConversions = parseInt(failedResult.rows[0].count);
+    const todayConversions = parseInt(todayResult.rows[0].count);
+    const thisMonthConversions = parseInt(monthResult.rows[0].count);
 
     const successRate = totalConversions > 0 
       ? (successfulConversions / totalConversions) * 100 

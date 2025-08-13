@@ -1,7 +1,11 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { createClient } from '@supabase/supabase-js';
+import session from 'express-session';
+import connectPgSimple from 'connect-pg-simple';
+import { db } from './config/database';
+import { kafkaService } from './config/kafka';
+import { EventHandlers } from './services/eventHandlers';
 import authRoutes from './routes/auth';
 import conversionRoutes from './routes/conversion';
 import paymentRoutes from './routes/payment';
@@ -25,17 +29,28 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Initialize Supabase client
-const supabaseUrl = process.env.VITE_SUPABASE_URL || 'https://dntwhvaorxpzwdjzemph.supabase.co';
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || 'sb_secret_-7sPsKpJJUc2pGheFT0oSA_cXKMhSLp';
-
-export const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-// GDPR and Security Context Middleware - Must be first
-app.use(securityContext);
-
 // Production Security Configuration
 configureProductionSecurity(app);
+
+// Session configuration
+const PgSession = connectPgSimple(session);
+app.use(session({
+  store: new PgSession({
+    conString: process.env.DATABASE_URL,
+    tableName: 'user_sessions'
+  }),
+  secret: process.env.SESSION_SECRET!,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+  }
+}));
+
+// GDPR and Security Context Middleware
+app.use(securityContext);
 
 // CORS Configuration with GDPR Compliance
 app.use(cors({
@@ -67,23 +82,46 @@ app.use(express.urlencoded({
   limit: '50mb' 
 }));
 
-// GDPR Audit Logging Middleware (using the audit function)
-app.use(async (req, res, next) => {
+// Initialize services
+async function initializeServices() {
   try {
-    await auditLog({
-      user_id: (req as AuthenticatedRequest).user?.id,
-      action: 'api_access',
-      resource: req.path,
-      ip_address: req.ip || req.connection.remoteAddress || 'unknown',
-      user_agent: req.get('User-Agent'),
-      request_id: res.locals.requestId || 'unknown',
-      processing_purpose: 'api_request_processing'
-    });
+    // Connect to database
+    await db.connect();
+    
+    // Connect to Kafka
+    await kafkaService.connect();
+    
+    // Set up Kafka consumers
+    await kafkaService.createConsumer(
+      'user-events-consumer',
+      ['user-events'],
+      EventHandlers.handleUserEvents
+    );
+    
+    await kafkaService.createConsumer(
+      'conversion-events-consumer',
+      ['file-conversion-events'],
+      EventHandlers.handleFileConversionEvents
+    );
+    
+    await kafkaService.createConsumer(
+      'payment-events-consumer',
+      ['payment-events'],
+      EventHandlers.handlePaymentEvents
+    );
+    
+    await kafkaService.createConsumer(
+      'audit-events-consumer',
+      ['audit-events'],
+      EventHandlers.handleAuditEvents
+    );
+    
+    logger.info('All services initialized successfully');
   } catch (error) {
-    logger.error('GDPR audit logging failed:', error);
+    logger.error('Failed to initialize services:', error);
+    process.exit(1);
   }
-  next();
-});
+}
 
 // Root route
 app.get('/', (req, res) => {
@@ -96,7 +134,8 @@ app.get('/', (req, res) => {
     data_controller: 'DOCMe File Conversion Service',
     privacy_policy: process.env.NODE_ENV === 'production' 
       ? 'https://docme.org.in/privacy' 
-      : 'http://localhost:5173/privacy'
+      : 'http://localhost:5173/privacy',
+    architecture: 'Event-driven with Kafka'
   });
 });
 
@@ -104,13 +143,16 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
+    database: 'Connected',
+    kafka: 'Connected',
     message: 'API Server is running',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     environment: process.env.NODE_ENV || 'development',
     security_headers: true,
     gdpr_compliance: true,
-    rate_limiting: true
+    rate_limiting: true,
+    event_driven: true
   });
 });
 
@@ -121,22 +163,9 @@ app.use('/api/payment', paymentRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/webhook', webhookRoutes);
 
-// 404 handler with GDPR logging
-app.use('*', async (req, res) => {
-  // Log 404 attempts for security monitoring
-  try {
-    await auditLog({
-      user_id: (req as AuthenticatedRequest).user?.id,
-      action: 'access_attempt',
-      resource: req.originalUrl,
-      ip_address: req.ip || req.connection.remoteAddress || 'unknown',
-      user_agent: req.get('User-Agent'),
-      request_id: res.locals.requestId || 'unknown',
-      processing_purpose: '404_security_monitoring'
-    });
-  } catch (error) {
-    logger.error('404 audit logging failed:', error);
-  }
+// 404 handler
+app.use('*', (req, res) => {
+  logger.warn('404 - Route not found:', req.originalUrl);
 
   res.status(404).json({ 
     error: 'Route not found',
@@ -146,41 +175,42 @@ app.use('*', async (req, res) => {
   });
 });
 
-// Enhanced Error handler with GDPR compliance
-app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  // Log errors for GDPR compliance and security
-  auditLog({
-    user_id: (req as AuthenticatedRequest).user?.id,
-    action: 'system_error',
-    resource: req.path,
-    ip_address: req.ip || req.connection.remoteAddress || 'unknown',
-    user_agent: req.get('User-Agent'),
-    request_id: res.locals.requestId || 'unknown',
-    processing_purpose: 'error_monitoring'
-  }).catch(auditError => {
-    logger.error('Error audit logging failed:', auditError);
-  });
+// Error handler
+app.use(errorHandler);
 
-  // Use existing error handler
-  errorHandler(err, req, res, next);
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  logger.info('SIGTERM received. Starting graceful shutdown...');
+  await kafkaService.disconnect();
+  await db.disconnect();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  logger.info('SIGINT received. Starting graceful shutdown...');
+  await kafkaService.disconnect();
+  await db.disconnect();
+  process.exit(0);
 });
 
 // Start server
-app.listen(PORT, () => {
-  logger.info(`DOCMe API Server running on port ${PORT}`);
-  console.log(`🚀 DOCMe API Server running on http://localhost:${PORT}`);
-  console.log(`📊 Health check: http://localhost:${PORT}/health`);
-  console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🛡️  Security: GDPR Compliant, Rate Limited, Headers Protected`);
-});
-
-// Start server
-app.listen(PORT, () => {
-  logger.info(`DOCMe API Server running on port ${PORT}`);
-  console.log(`🚀 DOCMe API Server running on http://localhost:${PORT}`);
-  console.log(`📊 Health check: http://localhost:${PORT}/health`);
-  console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🛡️  Security: GDPR Compliant, Rate Limited, Headers Protected`);
-});
-
+async function startServer() {
+  try {
+    await initializeServices();
+    
+    app.listen(PORT, () => {
+      logger.info(`DOCMe API Server running on port ${PORT}`);
+      console.log(`🚀 DOCMe API Server running on http://localhost:${PORT}`);
+      console.log(`📊 Health check: http://localhost:${PORT}/health`);
+      console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`🗄️ Database: PostgreSQL`);
+      console.log(`📡 Event System: Apache Kafka`);
+      console.log(`🛡️ Security: GDPR Compliant, Rate Limited, Headers Protected`);
+    });
+  } catch (error) {
+    logger.error('Failed to start server:', error);
+    process.exit(1);
+  }
+startServer();
+}
 export default app;

@@ -2,7 +2,8 @@ import fs from 'fs/promises';
 import fsSync from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import { supabase } from '../server';
+import { db } from '../config/database';
+import { kafkaService, KAFKA_TOPICS, EVENT_TYPES } from '../config/kafka';
 import { OpenRouterService } from './openrouterService';
 import { logger } from '../utils/logger';
 
@@ -31,8 +32,18 @@ export class ConversionService {
       logger.info(`Starting AI conversion for ${request.originalFilename} to ${request.outputFormat}`);
       
       // Update status to processing
-      await this.updateConversionStatus(request.conversionId, 'processing');
+      await db.query(
+        'UPDATE conversions SET status = $1, conversion_started_at = NOW() WHERE id = $2',
+        ['processing', request.conversionId]
+      );
 
+      // Publish conversion started event
+      await kafkaService.publishEvent(KAFKA_TOPICS.FILE_CONVERSION_EVENTS, {
+        type: EVENT_TYPES.CONVERSION_STARTED,
+        conversionId: request.conversionId,
+        userId: request.userId,
+        outputFormat: request.outputFormat
+      });
       // Check if conversion is supported
       const sourceFormat = path.extname(request.originalFilename).slice(1).toLowerCase();
       if (!this.openRouterService.isConversionSupported(sourceFormat, request.outputFormat)) {
@@ -71,16 +82,22 @@ export class ConversionService {
       }
 
       // Update conversion record with success
-      await supabase
-        .from('conversions')
-        .update({
-          status: 'completed',
-          converted_filename: path.basename(finalOutputPath),
-          download_url: downloadUrl,
-          conversion_time: conversionTime
-        })
-        .eq('id', request.conversionId);
+      await db.query(`
+        UPDATE conversions 
+        SET status = $1, converted_filename = $2, download_url = $3, 
+            conversion_time = $4, conversion_ended_at = NOW()
+        WHERE id = $5
+      `, ['completed', path.basename(finalOutputPath), downloadUrl, conversionTime, request.conversionId]);
 
+      // Publish conversion completed event
+      await kafkaService.publishEvent(KAFKA_TOPICS.FILE_CONVERSION_EVENTS, {
+        type: EVENT_TYPES.CONVERSION_COMPLETED,
+        conversionId: request.conversionId,
+        userId: request.userId,
+        convertedFileName: path.basename(finalOutputPath),
+        downloadUrl,
+        processingTime: conversionTime
+      });
       // Clean up input file
       await fs.unlink(request.inputPath).catch(() => {});
 
@@ -89,24 +106,21 @@ export class ConversionService {
     } catch (error) {
       logger.error(`AI conversion failed: ${request.conversionId}`, error);
       
-      await supabase
-        .from('conversions')
-        .update({
-          status: 'failed',
-          error_message: error instanceof Error ? error.message : 'Unknown error'
-        })
-        .eq('id', request.conversionId);
+      await db.query(
+        'UPDATE conversions SET status = $1, error_message = $2, conversion_ended_at = NOW() WHERE id = $3',
+        ['failed', error instanceof Error ? error.message : 'Unknown error', request.conversionId]
+      );
 
+      // Publish conversion failed event
+      await kafkaService.publishEvent(KAFKA_TOPICS.FILE_CONVERSION_EVENTS, {
+        type: EVENT_TYPES.CONVERSION_FAILED,
+        conversionId: request.conversionId,
+        userId: request.userId,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
       // Clean up input file
       await fs.unlink(request.inputPath).catch(() => {});
     }
-  }
-
-  private async updateConversionStatus(conversionId: string, status: string) {
-    await supabase
-      .from('conversions')
-      .update({ status })
-      .eq('id', conversionId);
   }
 
   /**
