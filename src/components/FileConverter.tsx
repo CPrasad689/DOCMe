@@ -80,17 +80,13 @@ const FileConverter: React.FC<FileConverterProps> = ({ user, onAuthRequired }) =
 
     const poll = async () => {
       try {
-        // Get auth token for API call
-        const session = await supabase.auth.getSession();
-        const token = session.data.session?.access_token;
+        // Get auth token from localStorage
+        const token = localStorage.getItem('auth_token');
 
-        if (!token) {
-          throw new Error('Authentication required');
-        }
-
-        const response = await fetch(`/api/conversion/status/${conversionId}`, {
+        const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+        const response = await fetch(`${apiUrl}/api/conversion/status/${conversionId}`, {
           headers: {
-            'Authorization': `Bearer ${token}`
+            ...(token && { 'Authorization': `Bearer ${token}` })
           }
         });
 
@@ -98,7 +94,8 @@ const FileConverter: React.FC<FileConverterProps> = ({ user, onAuthRequired }) =
           throw new Error(`HTTP error! status: ${response.status}`);
         }
 
-        const status = await response.json();
+        const result = await response.json();
+        const status = result.conversion || result;
 
         if (status.status === 'completed') {
           setTasks(prev => prev.map(task => 
@@ -182,24 +179,20 @@ const FileConverter: React.FC<FileConverterProps> = ({ user, onAuthRequired }) =
           task.id === taskId ? { ...task, status: 'processing', progress: 10 } : task
         ));
 
-        // Get auth token
-        const session = await supabase.auth.getSession();
-        const token = session.data.session?.access_token;
-
-        if (!token) {
-          throw new Error('Authentication required');
-        }
+        // Get auth token from localStorage
+        const token = localStorage.getItem('auth_token');
 
         const formData = new FormData();
         formData.append('file', file);
         formData.append('targetFormat', selectedFormat);
         formData.append('aiEnhanced', 'true'); // Enable AI enhancement
 
-        // Call Express.js conversion API
-        const response = await fetch('/api/conversion/convert', {
+        // Call the comprehensive conversion API
+        const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+        const response = await fetch(`${apiUrl}/api/conversion/convert`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${token}`
+            ...(token && { 'Authorization': `Bearer ${token}` })
           },
           body: formData,
         });
@@ -211,7 +204,7 @@ const FileConverter: React.FC<FileConverterProps> = ({ user, onAuthRequired }) =
 
         const result = await response.json();
         
-        if (result.conversionId) {
+        if (result.success && result.conversionId) {
           // Update progress to show processing started
           setTasks(prev => prev.map(task => 
             task.id === taskId ? { ...task, progress: 20 } : task
@@ -220,7 +213,7 @@ const FileConverter: React.FC<FileConverterProps> = ({ user, onAuthRequired }) =
           // Start polling for status
           pollConversionStatus(result.conversionId, taskId);
         } else {
-          throw new Error(result.message || 'Conversion failed');
+          throw new Error(result.error || 'Conversion failed');
         }
       } catch (conversionError) {
         console.error('Conversion error:', conversionError);

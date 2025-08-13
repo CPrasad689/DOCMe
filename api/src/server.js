@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import session from 'express-session';
 import dotenv from 'dotenv';
+import conversionRoutes from './routes/conversion.js';
 
 // Load environment variables
 dotenv.config();
@@ -51,6 +52,51 @@ app.get('/health', (req, res) => {
 });
 
 // Mock authentication routes (simplified for WebContainer)
+app.post('/api/auth/signup', (req, res) => {
+  const { email, password, fullName } = req.body;
+  
+  // Mock user creation
+  const user = {
+    id: Date.now().toString(),
+    email,
+    fullName,
+    planType: 'free',
+    created_at: new Date().toISOString()
+  };
+  
+  // Mock JWT token
+  const token = `mock-jwt-token-${user.id}`;
+  
+  res.json({
+    success: true,
+    user,
+    token,
+    message: 'User registered successfully'
+  });
+});
+
+app.post('/api/auth/signin', (req, res) => {
+  const { email, password } = req.body;
+  
+  // Mock user authentication
+  const user = {
+    id: Date.now().toString(),
+    email,
+    planType: 'free',
+    created_at: new Date().toISOString()
+  };
+  
+  // Mock JWT token
+  const token = `mock-jwt-token-${user.id}`;
+  
+  res.json({
+    success: true,
+    user,
+    token,
+    message: 'Login successful'
+  });
+});
+
 app.post('/api/auth/register', (req, res) => {
   const { email, password } = req.body;
   
@@ -101,35 +147,8 @@ app.post('/api/auth/logout', (req, res) => {
   });
 });
 
-// Mock conversion routes
-app.get('/api/conversion/formats', (req, res) => {
-  res.json({
-    success: true,
-    formats: {
-      input: ['pdf', 'docx', 'txt', 'md', 'html'],
-      output: ['pdf', 'docx', 'txt', 'md', 'html', 'json']
-    }
-  });
-});
-
-app.post('/api/convert', (req, res) => {
-  const { file, targetFormat } = req.body;
-  
-  // Mock conversion process
-  setTimeout(() => {
-    res.json({
-      success: true,
-      message: 'File converted successfully',
-      result: {
-        id: Date.now().toString(),
-        originalName: file?.name || 'document.pdf',
-        convertedFormat: targetFormat || 'docx',
-        downloadUrl: '/api/download/mock-file-id',
-        createdAt: new Date().toISOString()
-      }
-    });
-  }, 2000); // Simulate processing time
-});
+// Use the comprehensive conversion routes
+app.use('/api/conversion', conversionRoutes);
 
 // Mock payment routes
 app.post('/api/payment/create-intent', (req, res) => {
@@ -181,7 +200,9 @@ app.listen(PORT, () => {
   console.log(`🚀 DOCMe API Server running on http://localhost:${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}/health`);
   console.log(`🎯 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`⚡ Event-driven architecture ready (Kafka simulation mode)`);
+  console.log(`⚡ File Conversion Engine: 25+ formats supported`);
+  console.log(`📁 Supported formats: Documents, Images, Spreadsheets, Presentations, E-books`);
+  console.log(`🔄 Conversion API: http://localhost:${PORT}/api/conversion/formats`);
 });
 
 // Graceful shutdown
