@@ -3,7 +3,7 @@ import { Upload, FileText, Download, Sparkles, AlertCircle, CheckCircle, Loader,
 import { supabase } from '../lib/supabase';
 
 interface FileConverterProps {
-  user?: any;
+  user?: { id: string; email: string } | null;
   onAuthRequired: () => void;
 }
 
@@ -12,9 +12,19 @@ interface ConversionTask {
   fileName: string;
   fromFormat: string;
   toFormat: string;
-  status: 'uploading' | 'converting' | 'completed' | 'error';
+  status: 'pending' | 'processing' | 'completed' | 'failed';
   progress: number;
   downloadUrl?: string;
+  errorMessage?: string;
+  jobId?: string;
+}
+
+interface SupportedFormat {
+  value: string;
+  label: string;
+  color: string;
+  icon: string;
+  category: 'document' | 'image' | 'spreadsheet' | 'presentation';
 }
 
 const FileConverter: React.FC<FileConverterProps> = ({ user, onAuthRequired }) => {
@@ -22,15 +32,36 @@ const FileConverter: React.FC<FileConverterProps> = ({ user, onAuthRequired }) =
   const [selectedFormat, setSelectedFormat] = useState('pdf');
   const [tasks, setTasks] = useState<ConversionTask[]>([]);
 
-  const formats = [
-    { value: 'pdf', label: 'PDF', color: 'bg-gradient-to-r from-red-100 to-red-200 text-red-800 border-red-300', icon: '📄' },
-    { value: 'docx', label: 'Word', color: 'bg-gradient-to-r from-blue-100 to-blue-200 text-blue-800 border-blue-300', icon: '📝' },
-    { value: 'xlsx', label: 'Excel', color: 'bg-gradient-to-r from-green-100 to-green-200 text-green-800 border-green-300', icon: '📊' },
-    { value: 'pptx', label: 'PowerPoint', color: 'bg-gradient-to-r from-orange-100 to-orange-200 text-orange-800 border-orange-300', icon: '📈' },
-    { value: 'jpg', label: 'JPG', color: 'bg-gradient-to-r from-purple-100 to-purple-200 text-purple-800 border-purple-300', icon: '🖼️' },
-    { value: 'png', label: 'PNG', color: 'bg-gradient-to-r from-pink-100 to-pink-200 text-pink-800 border-pink-300', icon: '🎨' },
-    { value: 'webp', label: 'WebP', color: 'bg-gradient-to-r from-indigo-100 to-indigo-200 text-indigo-800 border-indigo-300', icon: '🌐' },
-    { value: 'mp4', label: 'MP4', color: 'bg-gradient-to-r from-yellow-100 to-yellow-200 text-yellow-800 border-yellow-300', icon: '🎬' }
+  // AI-powered format support - matching OpenRouter service capabilities
+  const formats: SupportedFormat[] = [
+    // Text and Document formats (AI-powered conversion)
+    { value: 'txt', label: 'Text (TXT)', color: 'bg-gradient-to-r from-gray-100 to-gray-200 text-gray-800 border-gray-300', icon: '�', category: 'document' },
+    { value: 'md', label: 'Markdown (MD)', color: 'bg-gradient-to-r from-indigo-100 to-indigo-200 text-indigo-800 border-indigo-300', icon: '📝', category: 'document' },
+    { value: 'html', label: 'HTML', color: 'bg-gradient-to-r from-orange-100 to-orange-200 text-orange-800 border-orange-300', icon: '🌐', category: 'document' },
+    { value: 'rtf', label: 'Rich Text (RTF)', color: 'bg-gradient-to-r from-yellow-100 to-yellow-200 text-yellow-800 border-yellow-300', icon: '📃', category: 'document' },
+    { value: 'pdf', label: 'PDF (Text-based)', color: 'bg-gradient-to-r from-red-100 to-red-200 text-red-800 border-red-300', icon: '📄', category: 'document' },
+    { value: 'docx', label: 'Word (DOCX)', color: 'bg-gradient-to-r from-blue-100 to-blue-200 text-blue-800 border-blue-300', icon: '📝', category: 'document' },
+    { value: 'odt', label: 'OpenDocument (ODT)', color: 'bg-gradient-to-r from-teal-100 to-teal-200 text-teal-800 border-teal-300', icon: '�', category: 'document' },
+    
+    // Spreadsheet formats (AI-powered conversion)
+    { value: 'csv', label: 'CSV', color: 'bg-gradient-to-r from-lime-100 to-lime-200 text-lime-800 border-lime-300', icon: '�', category: 'spreadsheet' },
+    { value: 'xlsx', label: 'Excel (XLSX)', color: 'bg-gradient-to-r from-green-100 to-green-200 text-green-800 border-green-300', icon: '📊', category: 'spreadsheet' },
+    { value: 'ods', label: 'OpenDocument Spreadsheet', color: 'bg-gradient-to-r from-emerald-100 to-emerald-200 text-emerald-800 border-emerald-300', icon: '📊', category: 'spreadsheet' },
+    
+    // Presentation formats (AI-powered conversion)
+    { value: 'pptx', label: 'PowerPoint (PPTX)', color: 'bg-gradient-to-r from-orange-100 to-orange-200 text-orange-800 border-orange-300', icon: '📈', category: 'presentation' },
+    { value: 'odp', label: 'OpenDocument Presentation', color: 'bg-gradient-to-r from-red-100 to-red-200 text-red-800 border-red-300', icon: '📋', category: 'presentation' },
+    
+    // Data formats (AI-powered conversion)
+    { value: 'json', label: 'JSON', color: 'bg-gradient-to-r from-purple-100 to-purple-200 text-purple-800 border-purple-300', icon: '�', category: 'document' },
+    { value: 'xml', label: 'XML', color: 'bg-gradient-to-r from-cyan-100 to-cyan-200 text-cyan-800 border-cyan-300', icon: '�', category: 'document' },
+    { value: 'yaml', label: 'YAML', color: 'bg-gradient-to-r from-pink-100 to-pink-200 text-pink-800 border-pink-300', icon: '📝', category: 'document' },
+    
+    // Code formats (AI-powered conversion)
+    { value: 'js', label: 'JavaScript', color: 'bg-gradient-to-r from-yellow-100 to-yellow-200 text-yellow-800 border-yellow-300', icon: '⚡', category: 'document' },
+    { value: 'ts', label: 'TypeScript', color: 'bg-gradient-to-r from-blue-100 to-blue-200 text-blue-800 border-blue-300', icon: '�', category: 'document' },
+    { value: 'py', label: 'Python', color: 'bg-gradient-to-r from-green-100 to-green-200 text-green-800 border-green-300', icon: '🐍', category: 'document' },
+    { value: 'java', label: 'Java', color: 'bg-gradient-to-r from-red-100 to-red-200 text-red-800 border-red-300', icon: '☕', category: 'document' },
   ];
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -43,25 +74,93 @@ const FileConverter: React.FC<FileConverterProps> = ({ user, onAuthRequired }) =
     setDragOver(false);
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const files = Array.from(e.dataTransfer.files);
-    handleFiles(files);
-  }, [selectedFormat]);
+  const pollConversionStatus = useCallback(async (conversionId: string, taskId: string) => {
+    const maxRetries = 30; // 30 retries with 2 second intervals = 1 minute
+    let retries = 0;
 
-  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    handleFiles(files);
-  }, [selectedFormat]);
+    const poll = async () => {
+      try {
+        // Get auth token for API call
+        const session = await supabase.auth.getSession();
+        const token = session.data.session?.access_token;
 
-  const handleFiles = (files: File[]) => {
+        if (!token) {
+          throw new Error('Authentication required');
+        }
+
+        const response = await fetch(`/api/conversion/status/${conversionId}`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const status = await response.json();
+
+        if (status.status === 'completed') {
+          setTasks(prev => prev.map(task => 
+            task.id === taskId ? {
+              ...task,
+              status: 'completed',
+              progress: 100,
+              downloadUrl: status.downloadUrl,
+              jobId: conversionId
+            } : task
+          ));
+        } else if (status.status === 'failed') {
+          setTasks(prev => prev.map(task => 
+            task.id === taskId ? {
+              ...task,
+              status: 'failed',
+              errorMessage: status.error || 'Conversion failed'
+            } : task
+          ));
+        } else {
+          // Still processing
+          const progress = Math.min(20 + (retries / maxRetries) * 70, 90);
+          setTasks(prev => prev.map(task => 
+            task.id === taskId ? { ...task, progress } : task
+          ));
+
+          if (retries < maxRetries) {
+            retries++;
+            setTimeout(poll, 2000);
+          } else {
+            // Timeout
+            setTasks(prev => prev.map(task => 
+              task.id === taskId ? {
+                ...task,
+                status: 'failed',
+                errorMessage: 'Conversion timeout'
+              } : task
+            ));
+          }
+        }
+      } catch (error) {
+        console.error('Status polling error:', error);
+        setTasks(prev => prev.map(task => 
+          task.id === taskId ? {
+            ...task,
+            status: 'failed',
+            errorMessage: 'Status check failed'
+          } : task
+        ));
+      }
+    };
+
+    poll();
+  }, []);
+
+  const handleFiles = useCallback((files: File[]) => {
     if (!user) {
       onAuthRequired();
       return;
     }
 
-    files.forEach(file => {
+    files.forEach(async (file) => {
       const fileExtension = file.name.split('.').pop()?.toLowerCase() || '';
       const taskId = Math.random().toString(36).substr(2, 9);
       
@@ -70,131 +169,222 @@ const FileConverter: React.FC<FileConverterProps> = ({ user, onAuthRequired }) =
         fileName: file.name,
         fromFormat: fileExtension,
         toFormat: selectedFormat,
-        status: 'uploading',
+        status: 'pending',
         progress: 0
       };
 
       setTasks(prev => [...prev, newTask]);
-
-      // Start actual conversion process
-      startConversion(file, taskId);
-    });
-  };
-
-  const startConversion = async (file: File, taskId: string) => {
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('targetFormat', selectedFormat);
-      formData.append('aiEnhanced', 'true');
       
-      const apiUrl = import.meta.env.VITE_API_URL || 'https://docme.org.in/api';
-
-      const response = await fetch(`${apiUrl}/conversion/convert`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
-        },
-        body: formData
-      });
-
-      if (!response.ok) {
-        throw new Error('Conversion failed');
-      }
-
-      const { conversionId } = await response.json();
-      
-      // Poll for conversion status
-      pollConversionStatus(conversionId, taskId);
-
-    } catch (error) {
-      setTasks(prev => prev.map(task => 
-        task.id === taskId 
-          ? { ...task, status: 'error' }
-          : task
-      ));
-    }
-  };
-
-  const pollConversionStatus = async (conversionId: string, taskId: string) => {
-    const pollInterval = setInterval(async () => {
+      // Call startConversion directly without dependency issues
       try {
-        const apiUrl = import.meta.env.VITE_API_URL || 'https://docme.org.in/api';
-        const response = await fetch(`${apiUrl}/conversion/status/${conversionId}`, {
+        // Update task status to processing
+        setTasks(prev => prev.map(task => 
+          task.id === taskId ? { ...task, status: 'processing', progress: 10 } : task
+        ));
+
+        // Get auth token
+        const session = await supabase.auth.getSession();
+        const token = session.data.session?.access_token;
+
+        if (!token) {
+          throw new Error('Authentication required');
+        }
+
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('targetFormat', selectedFormat);
+        formData.append('aiEnhanced', 'true'); // Enable AI enhancement
+
+        // Call Express.js conversion API
+        const response = await fetch('/api/conversion/convert', {
+          method: 'POST',
           headers: {
-            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
-          }
+            'Authorization': `Bearer ${token}`
+          },
+          body: formData,
         });
 
         if (!response.ok) {
-          throw new Error('Failed to get status');
+          const errorData = await response.json();
+          throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
         }
 
-        const status = await response.json();
+        const result = await response.json();
         
-        setTasks(prev => prev.map(task => 
-          task.id === taskId 
-            ? { 
-                ...task, 
-                status: status.status,
-                progress: status.progress,
-                downloadUrl: status.downloadUrl
-              }
-            : task
-        ));
+        if (result.conversionId) {
+          // Update progress to show processing started
+          setTasks(prev => prev.map(task => 
+            task.id === taskId ? { ...task, progress: 20 } : task
+          ));
 
-        if (status.status === 'completed' || status.status === 'failed') {
-          clearInterval(pollInterval);
+          // Start polling for status
+          pollConversionStatus(result.conversionId, taskId);
+        } else {
+          throw new Error(result.message || 'Conversion failed');
         }
-
-      } catch (error) {
-        clearInterval(pollInterval);
+      } catch (conversionError) {
+        console.error('Conversion error:', conversionError);
         setTasks(prev => prev.map(task => 
-          task.id === taskId 
-            ? { ...task, status: 'error' }
-            : task
+          task.id === taskId ? {
+            ...task,
+            status: 'failed',
+            errorMessage: conversionError instanceof Error ? conversionError.message : 'Conversion failed'
+          } : task
         ));
       }
-    }, 2000);
-  };
+    });
+  }, [selectedFormat, user, onAuthRequired, pollConversionStatus]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const files = Array.from(e.dataTransfer.files);
+    handleFiles(files);
+  }, [handleFiles]);
+
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    handleFiles(files);
+  }, [handleFiles]);
+
+  /*
+  const startConversion = useCallback(async (file: File, taskId: string) => {
+    try {
+      // Update task status to processing
+      setTasks(prev => prev.map(task => 
+        task.id === taskId ? { ...task, status: 'processing', progress: 10 } : task
+      ));
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('targetFormat', selectedFormat);
+      
+      // Add API key if user is authenticated
+      const session = await supabase.auth.getSession();
+      const apiKey = session.data.session?.access_token;
+      if (apiKey) {
+        formData.append('apiKey', apiKey);
+      }
+      
+      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+
+      // Upload and initiate conversion
+      const uploadResponse = await fetch(`${apiUrl}/api/v1/conversions/upload`, {
+        method: 'POST',
+        body: formData
+      });
+
+      const uploadResult = await uploadResponse.json();
+      
+      if (!uploadResult.success) {
+        throw new Error(uploadResult.message);
+      }
+
+      const jobId = uploadResult.jobId;
+      
+      // Update task with job ID
+      setTasks(prev => prev.map(task => 
+        task.id === taskId ? { ...task, jobId, progress: 30 } : task
+      ));
+      
+      // Poll for completion
+      const pollInterval = setInterval(async () => {
+        try {
+          const statusResponse = await fetch(`${apiUrl}/api/v1/conversions/status/${jobId}`);
+          const statusResult = await statusResponse.json();
+          
+          setTasks(prev => prev.map(task => 
+            task.id === taskId ? {
+              ...task,
+              progress: statusResult.progress || 0,
+              status: statusResult.status?.toLowerCase() || 'processing'
+            } : task
+          ));
+          
+          if (statusResult.status === 'COMPLETED') {
+            clearInterval(pollInterval);
+            setTasks(prev => prev.map(task => 
+              task.id === taskId ? {
+                ...task,
+                status: 'completed',
+                progress: 100,
+                downloadUrl: `${apiUrl}/api/v1/conversions/download/${jobId}`
+              } : task
+            ));
+          } else if (statusResult.status === 'FAILED') {
+            clearInterval(pollInterval);
+            setTasks(prev => prev.map(task => 
+              task.id === taskId ? {
+                ...task,
+                status: 'failed',
+                errorMessage: statusResult.errorMessage || 'Conversion failed'
+              } : task
+            ));
+          }
+        } catch (pollError) {
+          console.error('Polling error:', pollError);
+        }
+      }, 2000);
+
+      // Clear interval after 5 minutes to avoid infinite polling
+      setTimeout(() => {
+        clearInterval(pollInterval);
+      }, 300000);
+
+    } catch (conversionError) {
+      console.error('Conversion error:', conversionError);
+      setTasks(prev => prev.map(task => 
+        task.id === taskId ? {
+          ...task,
+          status: 'failed',
+          errorMessage: conversionError instanceof Error ? conversionError.message : 'Conversion failed'
+        } : task
+      ));
+    }
+  }, [selectedFormat]);
+  */
 
   const getStatusIcon = (status: ConversionTask['status']) => {
     switch (status) {
-      case 'uploading':
-      case 'converting':
+      case 'pending':
+      case 'processing':
         return <Loader className="h-5 w-5 animate-spin text-blue-600" />;
       case 'completed':
         return <CheckCircle className="h-5 w-5 text-green-600" />;
-      case 'error':
+      case 'failed':
         return <AlertCircle className="h-5 w-5 text-red-600" />;
+      default:
+        return <Loader className="h-5 w-5 text-gray-400" />;
     }
   };
 
   const getStatusText = (status: ConversionTask['status']) => {
     switch (status) {
-      case 'uploading':
-        return 'Uploading...';
-      case 'converting':
-        return 'Converting...';
+      case 'pending':
+        return 'Pending...';
+      case 'processing':
+        return 'Processing...';
       case 'completed':
         return 'Completed';
-      case 'error':
-        return 'Error';
+      case 'failed':
+        return 'Failed';
+      default:
+        return 'Unknown';
     }
   };
 
   return (
-    <div className="min-h-screen pt-8 pb-16 px-4 sm:px-6 lg:px-8 bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50 relative overflow-hidden">
+    <div className="min-h-screen pt-8 pb-16 px-4 sm:px-6 lg:px-8 bg-gradient-to-br from-orange-500 via-red-500 to-red-600 relative overflow-hidden">
       {/* Background Elements */}
       <div className="absolute inset-0 -z-10">
-        <div className="absolute top-20 left-10 w-72 h-72 bg-gradient-to-r from-blue-400/10 to-purple-600/10 rounded-full blur-3xl animate-pulse"></div>
-        <div className="absolute bottom-20 right-10 w-96 h-96 bg-gradient-to-r from-purple-400/10 to-pink-600/10 rounded-full blur-3xl animate-pulse delay-1000"></div>
+        <div className="absolute top-20 left-10 w-72 h-72 bg-gradient-to-r from-orange-400/30 to-red-500/40 rounded-full blur-3xl animate-pulse"></div>
+        <div className="absolute bottom-20 right-10 w-96 h-96 bg-gradient-to-r from-orange-500/25 to-red-600/35 rounded-full blur-3xl animate-pulse delay-1000"></div>
       </div>
 
       <div className="max-w-4xl mx-auto">
         <div className="text-center mb-16">
-          <h1 className="text-5xl md:text-7xl font-black text-gray-900 mb-6 leading-tight">
-            <span className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent block animate-gradient-x bg-300%">
+          <h1 className="text-3xl md:text-5xl font-black text-gray-900 mb-6 leading-tight">
+            <span className="text-gray-900 block">
               File Converter
             </span>
           </h1>
@@ -253,7 +443,7 @@ const FileConverter: React.FC<FileConverterProps> = ({ user, onAuthRequired }) =
               <Upload className="h-12 w-12 text-white" />
             </div>
             
-            <h3 className="text-3xl font-bold text-gray-900 mb-4">
+            <h3 className="text-2xl font-bold text-gray-900 mb-4">
               Drop files here or click to upload
             </h3>
             <p className="text-xl text-gray-600 mb-8 font-medium">
@@ -324,7 +514,7 @@ const FileConverter: React.FC<FileConverterProps> = ({ user, onAuthRequired }) =
                           <span>Download</span>
                         </button>
                       )}
-                      {task.status === 'error' && (
+                      {task.status === 'failed' && (
                         <button className="bg-gradient-to-r from-red-600 to-pink-600 text-white px-6 py-3 rounded-2xl font-bold hover:shadow-xl transform hover:scale-105 transition-all duration-300 flex items-center space-x-2">
                           <Plus className="h-5 w-5" />
                           <span>Retry</span>
@@ -333,7 +523,7 @@ const FileConverter: React.FC<FileConverterProps> = ({ user, onAuthRequired }) =
                     </div>
                   </div>
                   
-                  {task.status !== 'error' && (
+                  {task.status !== 'failed' && (
                     <div className="relative">
                       <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
                         <div 
@@ -355,11 +545,13 @@ const FileConverter: React.FC<FileConverterProps> = ({ user, onAuthRequired }) =
                     </div>
                   )}
                   
-                  {task.status === 'error' && (
+                  {task.status === 'failed' && (
                     <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
                       <div className="flex items-center space-x-2 text-red-700">
                         <AlertCircle className="h-5 w-5" />
-                        <span className="font-semibold">Conversion failed. Please try again or contact support.</span>
+                        <span className="font-semibold">
+                          {task.errorMessage || 'Conversion failed. Please try again or contact support.'}
+                        </span>
                       </div>
                     </div>
                   )}

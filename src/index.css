@@ -2,6 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Global body background */
+body {
+  background-color: #990000;
+}
+
 /* Custom animations and utilities */
 @keyframes gradient-x {
   0%, 100% {
@@ -329,10 +334,12 @@ html {
 
 /* Clean Logo Image Styles */
 .logo-image-rounded {
+  border-radius: 25px;
   transition: all 0.3s ease;
 }
 
 .logo-image-rounded:hover {
+  border-radius: 30px;
   transform: scale(1.05);
 }
 
@@ -364,4 +371,30 @@ html {
     rgba(34, 197, 94, 0.1) 0%,
     rgba(59, 130, 246, 0.05) 100%);
   transform: scale(1.02);
+}
+
+/* 4K Logo Glow Animation */
+@keyframes glow {
+  0% {
+    filter: drop-shadow(0 0 20px rgba(59, 130, 246, 0.5)) drop-shadow(0 0 40px rgba(139, 92, 246, 0.3));
+  }
+  100% {
+    filter: drop-shadow(0 0 30px rgba(59, 130, 246, 0.8)) drop-shadow(0 0 60px rgba(139, 92, 246, 0.6)) drop-shadow(0 0 80px rgba(236, 72, 153, 0.4));
+  }
+}
+
+/* Enhanced Float Animation for Logo */
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  25% {
+    transform: translateY(-8px) rotate(1deg);
+  }
+  50% {
+    transform: translateY(-12px) rotate(0deg);
+  }
+  75% {
+    transform: translateY(-6px) rotate(-1deg);
+  }
 }

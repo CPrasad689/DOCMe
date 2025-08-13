@@ -1,0 +1,409 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User Management with GDPR Compliance
+model User {
+  id                  String   @id @default(cuid())
+  email               String   @unique
+  username            String?  @unique
+  passwordHash        String
+  firstName           String?
+  lastName            String?
+  avatar              String?
+  emailVerified       Boolean  @default(false)
+  emailVerifiedAt     DateTime?
+  isActive            Boolean  @default(true)
+  lastLoginAt         DateTime?
+  loginAttempts       Int      @default(0)
+  lockedUntil         DateTime?
+  
+  // GDPR Compliance
+  gdprConsentAt       DateTime?
+  marketingConsent    Boolean  @default(false)
+  analyticsConsent    Boolean  @default(false)
+  dataRetentionUntil  DateTime?
+  
+  // Subscription & Usage
+  subscriptionTier    SubscriptionTier @default(FREE)
+  subscriptionExpiry  DateTime?
+  monthlyConversions  Int      @default(0)
+  totalConversions    Int      @default(0)
+  
+  // Timestamps
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  
+  // Relations
+  fileConversions     FileConversion[]
+  auditLogs           AuditLog[]
+  gdprRequests        GdprRequest[]
+  userConsents        UserConsent[]
+  subscriptions       Subscription[]
+  payments            Payment[]
+  
+  @@map("users")
+}
+
+// File Conversion Tracking
+model FileConversion {
+  id                  String   @id @default(cuid())
+  userId              String?
+  user                User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  // File Information
+  originalFileName    String
+  originalFileSize    Int
+  originalMimeType    String
+  inputFormat         String
+  outputFormat        String
+  
+  // Conversion Process
+  status              ConversionStatus @default(PENDING)
+  conversionStartedAt DateTime?
+  conversionEndedAt   DateTime?
+  processingTimeMs    Int?
+  
+  // Output File Information
+  convertedFileName   String?
+  convertedFileSize   Int?
+  convertedMimeType   String?
+  downloadUrl         String?
+  downloadExpiry      DateTime?
+  downloadCount       Int      @default(0)
+  
+  // Security & Compliance
+  ipAddress           String
+  userAgent           String?
+  requestId           String   @unique
+  
+  // File Processing Security
+  virusScanResult     String?  // 'clean', 'infected', 'suspicious'
+  contentValidated    Boolean  @default(false)
+  
+  // Error Handling
+  errorMessage        String?
+  errorCode           String?
+  
+  // Timestamps
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  
+  @@map("file_conversions")
+}
+
+// Subscription Management
+model Subscription {
+  id                  String   @id @default(cuid())
+  userId              String
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  tier                SubscriptionTier
+  status              SubscriptionStatus @default(ACTIVE)
+  
+  // Billing
+  priceId             String?
+  customerId          String?
+  subscriptionId      String?  // Stripe/Razorpay subscription ID
+  
+  // Dates
+  startDate           DateTime @default(now())
+  endDate             DateTime
+  canceledAt          DateTime?
+  
+  // Usage Limits
+  monthlyConversions  Int      @default(0)
+  conversionLimit     Int
+  maxFileSize         Int      // in bytes
+  
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  
+  @@map("subscriptions")
+}
+
+// Payment Tracking
+model Payment {
+  id                  String   @id @default(cuid())
+  userId              String
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Payment Information
+  amount              Decimal  @db.Decimal(10, 2)
+  currency            String   @default("USD")
+  status              PaymentStatus @default(PENDING)
+  
+  // Gateway Information
+  paymentGateway      String   // 'stripe', 'razorpay', 'paypal'
+  transactionId       String?  @unique
+  gatewayPaymentId    String?
+  gatewayCustomerId   String?
+  
+  // Payment Details
+  paymentMethod       String?
+  description         String?
+  
+  // Timestamps
+  paidAt              DateTime?
+  failedAt            DateTime?
+  refundedAt          DateTime?
+  
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  
+  @@map("payments")
+}
+
+// GDPR Audit Logging
+model AuditLog {
+  id                  String   @id @default(cuid())
+  userId              String?
+  user                User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  // Action Details
+  action              String   // 'login', 'file_upload', 'conversion', 'data_access'
+  resource            String   // 'user', 'file', 'conversion', 'subscription'
+  resourceId          String?
+  
+  // Request Information
+  ipAddress           String
+  userAgent           String?
+  requestId           String
+  
+  // GDPR Compliance
+  legalBasis          String?  // 'consent', 'contract', 'legitimate_interest'
+  dataSubjectId       String?
+  processingPurpose   String
+  
+  // Additional Data
+  metadata            Json?
+  
+  createdAt           DateTime @default(now())
+  
+  @@map("audit_logs")
+}
+
+// GDPR Data Requests
+model GdprRequest {
+  id                  String   @id @default(cuid())
+  userId              String?
+  user                User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  // Request Information
+  email               String
+  fullName            String
+  requestType         GdprRequestType
+  requestDetails      String?
+  
+  // Verification
+  verificationToken   String?
+  verifiedAt          DateTime?
+  
+  // Processing
+  status              GdprRequestStatus @default(SUBMITTED)
+  assignedTo          String?
+  
+  // Request Context
+  ipAddress           String
+  userAgent           String?
+  requestId           String   @unique
+  
+  // Response
+  responseData        String?
+  responseDeliveredAt DateTime?
+  
+  // Timestamps
+  submittedAt         DateTime @default(now())
+  processedAt         DateTime?
+  completedAt         DateTime?
+  
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  
+  @@map("gdpr_requests")
+}
+
+// User Consent Management
+model UserConsent {
+  id                  String   @id @default(cuid())
+  userId              String?
+  user                User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  email               String   // For non-registered users
+  consentType         ConsentType
+  
+  // Consent Status
+  granted             Boolean  @default(false)
+  grantedAt           DateTime?
+  withdrawnAt         DateTime?
+  
+  // Context
+  method              String   // 'cookie_banner', 'settings_page', 'email_link'
+  ipAddress           String
+  userAgent           String?
+  
+  // Additional Information
+  purpose             String?
+  dataCategories      String?
+  retention           String?
+  
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  
+  @@unique([email, consentType])
+  @@map("user_consents")
+}
+
+// Security Incidents
+model SecurityIncident {
+  id                  String   @id @default(cuid())
+  
+  // Incident Details
+  type                String   // 'failed_login', 'suspicious_activity', 'data_breach'
+  severity            SecuritySeverity @default(LOW)
+  description         String
+  
+  // Context
+  userId              String?
+  ipAddress           String
+  userAgent           String?
+  requestId           String?
+  
+  // Investigation
+  status              IncidentStatus @default(OPEN)
+  assignedTo          String?
+  resolution          String?
+  resolvedAt          DateTime?
+  
+  // Notification
+  notifiedAt          DateTime?
+  reportedToAuthority Boolean  @default(false)
+  
+  // Additional Data
+  metadata            Json?
+  
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  
+  @@map("security_incidents")
+}
+
+// File Processing Logs
+model FileProcessingLog {
+  id                  String   @id @default(cuid())
+  conversionId        String
+  
+  // Processing Step
+  step                String   // 'upload', 'validation', 'conversion', 'download'
+  status              String   // 'started', 'completed', 'failed'
+  
+  // Performance Metrics
+  startTime           DateTime
+  endTime             DateTime?
+  processingTimeMs    Int?
+  memoryUsage         Int?     // in bytes
+  cpuUsage            Float?   // percentage
+  
+  // Error Information
+  errorMessage        String?
+  errorStack          String?
+  
+  // Additional Context
+  metadata            Json?
+  
+  createdAt           DateTime @default(now())
+  
+  @@map("file_processing_logs")
+}
+
+// System Configuration
+model SystemConfig {
+  id                  String   @id @default(cuid())
+  key                 String   @unique
+  value               String
+  description         String?
+  category            String?  // 'security', 'features', 'limits'
+  
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  
+  @@map("system_config")
+}
+
+// Enums
+enum SubscriptionTier {
+  FREE
+  BASIC
+  PREMIUM
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELED
+  EXPIRED
+  SUSPENDED
+}
+
+enum ConversionStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  EXPIRED
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+  CANCELED
+}
+
+enum GdprRequestType {
+  ACCESS
+  PORTABILITY
+  RECTIFICATION
+  ERASURE
+  RESTRICTION
+  OBJECTION
+}
+
+enum GdprRequestStatus {
+  SUBMITTED
+  VERIFIED
+  PROCESSING
+  COMPLETED
+  REJECTED
+}
+
+enum ConsentType {
+  MARKETING
+  ANALYTICS
+  PREFERENCES
+  COOKIES
+  PROCESSING
+}
+
+enum SecuritySeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IncidentStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+  CLOSED
+}

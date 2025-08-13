@@ -10,7 +10,7 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
-export const authenticateUser = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+export const authenticateUser = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const authHeader = req.headers.authorization;
     
@@ -40,7 +40,8 @@ export const authenticateUser = async (req: AuthenticatedRequest, res: Response,
       return res.status(401).json({ error: 'User not found' });
     }
 
-    req.user = userData;
+    // Add user to request object
+    (req as AuthenticatedRequest).user = userData;
     next();
 
   } catch (error) {

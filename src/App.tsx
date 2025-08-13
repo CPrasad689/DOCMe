@@ -2,31 +2,21 @@ import React, { useState } from 'react';
 import { Toaster } from 'react-hot-toast';
 import Header from './components/Header';
 import Hero from './components/Hero';
-import Features from './components/Features';
 import Pricing from './components/Pricing';
 import FileConverter from './components/FileConverter';
-import ConvertFilesSection from './components/ConvertFilesSection';
 import Footer from './components/Footer';
 import AuthModal from './components/AuthModal';
+import CookieConsent from './components/CookieConsent';
+import AboutUs from './components/pages/AboutUs';
+import PrivacyPolicy from './components/pages/PrivacyPolicy';
+import TermsOfService from './components/pages/TermsOfService';
+import ContactUs from './components/pages/ContactUs';
 import { useAuth } from './hooks/useAuth';
 
 function App() {
-  const [currentView, setCurrentView] = useState<'home' | 'converter'>('home');
+  const [currentView, setCurrentView] = useState<'home' | 'converter' | 'about' | 'privacy' | 'terms' | 'contact'>('home');
   const [authModalOpen, setAuthModalOpen] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const { user, loading } = useAuth();
-
-  const handleFileSelect = (file: File) => {
-    setSelectedFile(file);
-    setCurrentView('converter');
-  };
-
-  const scrollToConverter = () => {
-    const convertSection = document.getElementById('convert-files-section');
-    if (convertSection) {
-      convertSection.scrollIntoView({ behavior: 'smooth' });
-    }
-  };
 
   if (loading) {
     return (
@@ -46,21 +36,29 @@ function App() {
         currentView={currentView}
         user={user}
         onAuthClick={() => setAuthModalOpen(true)}
-        onScrollToConverter={scrollToConverter}
       />
       
       {currentView === 'home' ? (
         <>
-          <Hero onStartConverting={() => setCurrentView('converter')} />
-          <ConvertFilesSection onFileSelect={handleFileSelect} />
-          <Features />
+          <Hero />
           <Pricing user={user} onAuthRequired={() => setAuthModalOpen(true)} />
         </>
-      ) : (
+      ) : currentView === 'converter' ? (
         <FileConverter user={user} onAuthRequired={() => setAuthModalOpen(true)} />
-      )}
+      ) : currentView === 'about' ? (
+        <AboutUs />
+      ) : currentView === 'privacy' ? (
+        <PrivacyPolicy />
+      ) : currentView === 'terms' ? (
+        <TermsOfService />
+      ) : currentView === 'contact' ? (
+        <ContactUs />
+      ) : null}
       
       <Footer />
+      
+      {/* GDPR Cookie Consent */}
+      <CookieConsent />
       
       <AuthModal 
         isOpen={authModalOpen}

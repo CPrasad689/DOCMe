@@ -1,6 +1,7 @@
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
+import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { authenticateUser, AuthenticatedRequest } from '../middleware/auth';
 import { validateConversion } from '../middleware/validation';
@@ -47,11 +48,12 @@ router.post('/convert',
   authenticateUser, 
   upload.single('file'), 
   validateConversion,
-  async (req: AuthenticatedRequest, res: express.Response) => {
+  async (req: express.Request, res: express.Response) => {
+    const authReq = req as AuthenticatedRequest;
     try {
-      const { targetFormat, aiEnhanced = false } = req.body;
-      const file = req.file;
-      const userId = req.user.id;
+      const { targetFormat, aiEnhanced = false } = authReq.body;
+      const file = authReq.file;
+      const userId = authReq.user.id;
 
       if (!file) {
         return res.status(400).json({ error: 'No file uploaded' });
@@ -131,10 +133,11 @@ router.post('/convert',
 );
 
 // Get conversion status
-router.get('/status/:conversionId', authenticateUser, async (req: AuthenticatedRequest, res: express.Response) => {
+router.get('/status/:conversionId', authenticateUser, async (req: express.Request, res: express.Response) => {
+  const authReq = req as AuthenticatedRequest;
   try {
-    const { conversionId } = req.params;
-    const userId = req.user.id;
+    const { conversionId } = authReq.params;
+    const userId = authReq.user.id;
 
     const { data: conversion, error } = await supabase
       .from('conversions')
@@ -165,10 +168,11 @@ router.get('/status/:conversionId', authenticateUser, async (req: AuthenticatedR
 });
 
 // Get user's conversion history
-router.get('/history', authenticateUser, async (req: AuthenticatedRequest, res: express.Response) => {
+router.get('/history', authenticateUser, async (req: express.Request, res: express.Response) => {
+  const authReq = req as AuthenticatedRequest;
   try {
-    const userId = req.user.id;
-    const { page = 1, limit = 20 } = req.query;
+    const userId = authReq.user.id;
+    const { page = 1, limit = 20 } = authReq.query;
     const offset = (Number(page) - 1) * Number(limit);
 
     const { data: conversions, error, count } = await supabase
@@ -195,6 +199,65 @@ router.get('/history', authenticateUser, async (req: AuthenticatedRequest, res: 
 
   } catch (error) {
     logger.error('Error in conversion history:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Download converted file
+router.get('/download/:conversionId', authenticateUser, async (req: express.Request, res: express.Response) => {
+  const authReq = req as AuthenticatedRequest;
+  try {
+    const { conversionId } = authReq.params;
+    const userId = authReq.user.id;
+
+    // Get conversion record
+    const { data: conversion, error } = await supabase
+      .from('conversions')
+      .select('*')
+      .eq('id', conversionId)
+      .eq('user_id', userId)
+      .single();
+
+    if (error || !conversion) {
+      return res.status(404).json({ error: 'Conversion not found' });
+    }
+
+    if (conversion.status !== 'completed') {
+      return res.status(400).json({ error: 'Conversion not completed yet' });
+    }
+
+    if (!conversion.converted_filename) {
+      return res.status(404).json({ error: 'Converted file not found' });
+    }
+
+    // Check if conversion has expired
+    if (conversion.expires_at && new Date(conversion.expires_at) < new Date()) {
+      return res.status(410).json({ error: 'Download link has expired' });
+    }
+
+    const filePath = path.join(process.env.UPLOAD_DIR || 'uploads', conversion.converted_filename);
+    
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found on server' });
+    }
+
+    // Set appropriate headers for download
+    const originalName = path.parse(conversion.original_filename).name;
+    const downloadFilename = `${originalName}_converted.${conversion.target_format}`;
+    
+    res.setHeader('Content-Disposition', `attachment; filename="${downloadFilename}"`);
+    res.setHeader('Content-Type', 'application/octet-stream');
+
+    // Stream the file
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+
+    // Log the download
+    logger.info(`File downloaded: ${conversionId} by user ${userId}`);
+
+  } catch (error) {
+    logger.error('Error in file download:', error);
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
